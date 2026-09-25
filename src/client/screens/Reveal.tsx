@@ -1,13 +1,14 @@
+import { buildProfile } from '../../shared/profile.ts';
 import type { CaseResultView, PlayerView } from '../../shared/view.ts';
 import type { Api } from '../net.ts';
-import { DIM_LABEL, formatClock } from '../ui.tsx';
+import { DIM_LABEL } from '../ui.tsx';
 
 function names(view: PlayerView, r: CaseResultView) {
   const player = (id: string) => view.players.find((p) => p.id === id)?.name ?? '?';
   return (id: string) => `${r.cards[id]?.name ?? '?'} (${player(id)})`;
 }
 
-export function Reveal({ view, api, remaining }: { view: PlayerView; api: Api; remaining: number }) {
+export function Reveal({ view, api }: { view: PlayerView; api: Api }) {
   const r = view.lastResult;
   if (!r) return null;
   const n = names(view, r);
@@ -15,12 +16,14 @@ export function Reveal({ view, api, remaining }: { view: PlayerView; api: Api; r
   const sorted = [...view.players].sort((a, b) => b.score - a.score);
   const accusedCounts = new Map<string, number>();
   Object.values(r.accusations).forEach((a) => a && accusedCounts.set(a.targetId, (accusedCounts.get(a.targetId) ?? 0) + 1));
+  const myProfile = view.case ? buildProfile(view.case) : [];
+  const myForgeries = view.case ? [...view.case.hand, ...view.case.seen].filter((nv) => r.forgeryTrails.some((f) => f.noteId === nv.id)) : [];
   const biggestCamp = [...accusedCounts.entries()].filter(([id]) => id !== r.killerId && !r.accompliceIds.includes(id)).sort((a, b) => b[1] - a[1])[0];
 
   return (
     <div className="flex flex-col gap-4 px-4 py-6 pb-12">
       <div className="text-center">
-        <div className="text-xs uppercase tracking-[0.3em] text-accent">Case {r.caseIndex + 1} solved?</div>
+        <div className="text-xs uppercase tracking-[0.3em] text-accent">{r.practice ? 'Practice case — points don\'t count' : 'The truth'}</div>
         <div className="pop mt-2 font-display text-4xl">{r.cards[r.killerId].name}</div>
         <div className="text-sm text-zinc-400">played by {view.players.find((p) => p.id === r.killerId)?.name}</div>
         <div className="text-zinc-400">was the killer 🔪</div>
@@ -46,6 +49,29 @@ export function Reveal({ view, api, remaining }: { view: PlayerView; api: Api; r
           </div>
         )}
       </div>
+
+      {view.case && (
+        <div className="card text-sm">
+          <h3 className="mb-2 font-semibold">How you could have solved it</h3>
+          {(['coat', 'arrival', 'drink', 'phone', 'team'] as const).map((d) => {
+            const mine = myProfile.find((p) => p.dim === d);
+            const truth = r.cards[r.killerId].traits[d];
+            const said = mine?.best ?? (mine?.status === 'conflict' ? mine.values.map((v) => v.value).join(' or ') : undefined);
+            return (
+              <div key={d} className="flex justify-between">
+                <span className="text-zinc-400">{DIM_LABEL[d]}</span>
+                <span>
+                  {truth}{' '}
+                  <span className="text-xs text-zinc-500">
+                    {!said ? '— you had no clue' : said === truth ? '— your clues were right ✓' : `— your clues said ${said} ✗`}
+                  </span>
+                </span>
+              </div>
+            );
+          })}
+          {myForgeries.length > 0 && <div className="mt-2 text-accent">{myForgeries.length} of the notes you saw were forged.</div>}
+        </div>
+      )}
 
       {r.forgeryTrails.length > 0 && (
         <div className="card text-sm">
@@ -109,12 +135,9 @@ export function Reveal({ view, api, remaining }: { view: PlayerView; api: Api; r
 
       <Leaderboard view={view} sorted={sorted} />
 
-      <div className="text-center text-sm text-zinc-500">Next case in {formatClock(remaining)}</div>
-      {view.hostId === view.you && (
-        <button className="btn-primary" onClick={() => api.lobby({ type: 'advance' })}>
-          {view.caseIndex + 1 >= view.settings.cases ? 'Finish game' : 'Next case now'}
-        </button>
-      )}
+      <button className="btn-primary py-4 text-lg" disabled={view.case?.ready} onClick={() => api.act({ type: 'done' })}>
+        {view.case?.ready ? 'Waiting for the others…' : view.caseIndex + 1 >= view.totalCases ? 'Finish game' : 'Continue to the next case'}
+      </button>
     </div>
   );
 }

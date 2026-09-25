@@ -118,7 +118,7 @@ export function useGame() {
       if (!r.ok && r.error) pushToast(r.error);
       return r;
     },
-    botGame: (opts: { players: number; level: string; cases: number; pace: string }) => emit('botGame', opts),
+    botGame: (opts: { players: number; level: string; cases: number }) => emit('botGame', opts),
     spectate: (code: string) => emit('spectate', { code }),
     setSpeed: (speed: number) => getSocket().emit('setSpeed', { speed }),
     leave: () => {

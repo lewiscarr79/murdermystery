@@ -10,7 +10,13 @@ A real-time murder-mystery party game for 4–22 players on their own phones or 
 - **Question** each other using preset questions. Everyone answers with **Truth**, **Lie** (3 per case) or **No comment**.
 - **Swap** notes blind, **give** a note away, or **show** a note, which flashes on the other player's phone for 5 seconds.
 - The killer's side forges notes to frame an innocent **Patsy** and hides the real evidence.
-- Timed rounds with hard deadlines: if you miss your chance, it's gone. Accuse the killer with **Sure** or **Hunch**, then see the reveal and the leaderboard.
+- **No timers.** A round moves on as soon as everyone has done their part, and everyone can see who the game is waiting on, including you.
+- **Two steps per round:**
+  1. One main thing to do: read clues, ask questions, or make your forced blind swap plus one optional move.
+  2. An end-of-round step: make a public statement (or stay quiet) and team up with a secret ally (or go it alone).
+- A **"Your job now"** card tells you exactly what to do. The **WANTED** poster adds up what your clues say about the killer, and each suspect shows ✓ / ✗ / ? against it.
+- The first case is an optional **guided practice case** whose points don't count.
+- Accuse the killer with **Sure** or **Hunch**, then see the reveal and the leaderboard.
 
 Every case is generated fresh: traits, the killer, forgeries and clue distribution all change, so it stays replayable.
 
@@ -53,17 +59,17 @@ TypeScript end to end.
 
 | Path | What it is |
 |---|---|
-| `src/shared/` | Types, every rule constant (`rules.ts`), clock-offset maths, the view types sent to clients |
+| `src/shared/` | Types, every rule constant (`rules.ts`), clock-offset maths, the view types sent to clients, player-side helpers (`profile.ts`: WANTED poster, suspect ticks, note meanings, next-move tips) |
 | `src/engine/` | Pure, deterministic game code: seeded RNG, the *Launch Night* pack, solver, **case generator**, role rotation, state machine (`game.ts`), scoring, per-player redaction (`views.ts`) |
 | `src/server/` | Socket.IO rooms with authoritative timers (`rooms.ts`) and bots (`bots/`) that read only their own redacted view |
 | `src/client/` | React + Tailwind phone UI: My Card, Case File (auto notebook and suspect grid), Offers, Accusation, Reveal, Spectator |
 | `scripts/sim.ts` | Headless balance simulator |
 
 **Keeping every device in sync:**
-- The server owns all state and timers.
-- It sends **absolute deadlines** (`endsAt`), never "seconds left".
-- Each client estimates its clock offset from the lowest-latency of 5 pings, repeated every 30 s, so countdowns agree to within tens of milliseconds even when phones' clocks are minutes out.
-- The game starts at a broadcast `startsAt`, so every phone shows the same 3-2-1.
+- The server owns all state.
+- The game starts at a broadcast absolute time (`startsAt`). Each client estimates its clock offset from the lowest-latency of 5 pings, repeated every 30 s, so every phone shows the same 3-2-1 even when phones' clocks are minutes out.
+- After that, rounds end on completion, not on a timer. Every view carries `waitingOn`: who the round is waiting for, with a vague public reason.
+- Players who have dropped out never block a round, and the host can move on without anyone who's gone quiet.
 - A phone that locks rejoins its seat automatically using a token stored on the device.
 
 **Keeping secrets:** clients only receive `playerView()`. It never contains:

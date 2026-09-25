@@ -1,16 +1,15 @@
 import { useEffect, useState } from 'react';
-import { ROUND_LABELS, isQuestionRound, isTradingRound } from '../../shared/rules.ts';
+import { ROUND_LABELS } from '../../shared/rules.ts';
 import type { PlayerView } from '../../shared/view.ts';
 import type { Api } from '../net.ts';
-import { DIM_LABEL, Name, formatClock } from '../ui.tsx';
+import { DIM_LABEL, Name } from '../ui.tsx';
 import { CaseFile } from './CaseFile.tsx';
 import { Offers, offerCount } from './Offers.tsx';
 import { Accuse } from './Accuse.tsx';
 import { Reveal } from './Reveal.tsx';
+import { Coach, WaitingBar, WrapUp, YouBanner, introBullets, type Tab } from './Coach.tsx';
 
-type Tab = 'card' | 'file' | 'offers';
-
-export function Game({ view, api, now }: { view: PlayerView; api: Api; now: number }) {
+export function Game({ view, api }: { view: PlayerView; api: Api; now: number }) {
   const cv = view.case!;
   const round = view.round!;
   const [tab, setTab] = useState<Tab>('card');
@@ -18,53 +17,54 @@ export function Game({ view, api, now }: { view: PlayerView; api: Api; now: numb
 
   useEffect(() => {
     setIntro(round);
-    if (round === 'briefing') setTab('card');
-    else if (round === 'evidence' || isQuestionRound(round) || isTradingRound(round)) setTab((t) => (t === 'card' ? 'file' : t));
-    const t = setTimeout(() => setIntro(null), 2600);
+    setTab(round === 'briefing' ? 'card' : 'file');
+    if (view.practice) return; // practice: the intro waits for "Got it"
+    const t = setTimeout(() => setIntro(null), 4500);
     return () => clearTimeout(t);
-  }, [round, view.caseIndex]);
+  }, [round, view.caseIndex]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const remaining = Math.max(0, (view.roundEndsAt ?? now) - now);
   const label = ROUND_LABELS[round];
   const offers = offerCount(view);
-  const urgent = remaining < 10_000;
 
-  if (round === 'reveal') return <Reveal view={view} api={api} remaining={remaining} />;
+  const header = (
+    <header className="sticky top-0 z-30 border-b border-line bg-ink/95 backdrop-blur">
+      <div className="flex items-center justify-between gap-2 px-4 py-3">
+        <div className="min-w-0">
+          <div className="text-[11px] uppercase tracking-widest text-zinc-500">
+            {view.practice ? 'Practice case' : `Case ${view.caseIndex + (view.settings.practice ? 0 : 1)}/${view.settings.cases}`} · Round {(view.roundIndex ?? 0) + 1}/8
+          </div>
+          <div className="font-display text-xl">{label.title}</div>
+        </div>
+        <WaitingBar view={view} api={api} />
+      </div>
+      <YouBanner view={view} setTab={setTab} />
+    </header>
+  );
 
-  const counters: string[] = [];
-  if (isQuestionRound(round)) counters.push(`${cv.left.questions} question${cv.left.questions === 1 ? '' : 's'} left`, `${cv.liesLeft} lies`);
-  if (isTradingRound(round)) counters.push(`${cv.left.requests} requests`, `${cv.left.shows} shows`);
-  if (isQuestionRound(round) || isTradingRound(round)) counters.push(`${cv.left.statements} statements`);
+  if (round === 'reveal')
+    return (
+      <div className="min-h-screen">
+        {header}
+        <Reveal view={view} api={api} />
+      </div>
+    );
+
+  const wrapping = cv.stage === 'wrap' && round !== 'accusation';
 
   return (
     <div className="flex min-h-screen flex-col pb-20">
-      <header className="sticky top-0 z-30 border-b border-line bg-ink/95 px-4 py-3 backdrop-blur">
-        <div className="flex items-center justify-between">
-          <div>
-            <div className="text-[11px] uppercase tracking-widest text-zinc-500">
-              Case {view.caseIndex + 1}/{view.settings.cases} · Round {(view.roundIndex ?? 0) + 1}/7
-            </div>
-            <div className="font-display text-xl">{label.title}</div>
-          </div>
-          <div className="flex items-center gap-3">
-            <div className={`font-mono text-2xl tabular-nums ${urgent ? 'text-accent' : ''}`}>{formatClock(remaining)}</div>
-            <button className={`chip py-2 ${cv.done ? 'border-gold text-gold' : ''}`} disabled={cv.done} onClick={() => api.act({ type: 'done' })}>
-              {cv.done ? 'Done ✓' : 'Done'}
-            </button>
-          </div>
-        </div>
-        {counters.length > 0 && <div className="mt-1 text-xs text-zinc-400">{counters.join(' · ')}</div>}
-      </header>
+      {header}
 
       <main className="flex-1 px-4 py-4">
         {round === 'accusation' ? (
           <Accuse view={view} api={api} />
-        ) : tab === 'card' ? (
-          <MyCard view={view} />
-        ) : tab === 'file' ? (
-          <CaseFile view={view} api={api} />
+        ) : wrapping && tab !== 'offers' ? (
+          <WrapUp view={view} api={api} />
         ) : (
-          <Offers view={view} api={api} now={now} />
+          <>
+            <Coach view={view} api={api} setTab={setTab} />
+            {tab === 'card' ? <MyCard view={view} /> : tab === 'file' ? <CaseFile view={view} api={api} /> : <Offers view={view} api={api} />}
+          </>
         )}
       </main>
 
@@ -73,15 +73,13 @@ export function Game({ view, api, now }: { view: PlayerView; api: Api; now: numb
           {(
             [
               ['card', 'My Card'],
-              ['file', 'Case File'],
-              ['offers', 'Offers'],
+              ['file', wrapping ? 'End of round' : 'Case File'],
+              ['offers', 'Requests'],
             ] as [Tab, string][]
           ).map(([t, text]) => (
             <button key={t} className={`relative py-4 text-sm font-semibold ${tab === t ? 'text-white' : 'text-zinc-500'}`} onClick={() => setTab(t)}>
               {text}
-              {t === 'offers' && offers > 0 && (
-                <span className="absolute right-6 top-2 rounded-full bg-accent px-1.5 text-[11px] text-white">{offers}</span>
-              )}
+              {t === 'offers' && offers > 0 && <span className="absolute right-6 top-2 rounded-full bg-accent px-1.5 text-[11px] text-white">{offers}</span>}
             </button>
           ))}
         </nav>
@@ -89,9 +87,20 @@ export function Game({ view, api, now }: { view: PlayerView; api: Api; now: numb
 
       {intro && (
         <div className="fixed inset-0 z-40 flex flex-col items-center justify-center bg-ink/95 px-8 text-center" onClick={() => setIntro(null)}>
-          <div className="text-xs uppercase tracking-[0.3em] text-accent">Round {(view.roundIndex ?? 0) + 1} of 7</div>
+          <div className="text-xs uppercase tracking-[0.3em] text-accent">
+            {view.practice ? 'Practice · ' : ''}Round {(view.roundIndex ?? 0) + 1} of 8
+          </div>
           <div className="pop mt-2 font-display text-5xl">{label.title}</div>
-          <div className="mt-4 max-w-xs text-zinc-300">{label.hint}</div>
+          <div className="mt-3 max-w-xs text-zinc-300">{label.hint}</div>
+          <ul className="mt-5 flex max-w-xs flex-col gap-2 text-left text-sm">
+            {introBullets(view).map((b, i) => (
+              <li key={i} className="flex gap-2">
+                <span className="text-accent">{i + 1}.</span>
+                <span>{b}</span>
+              </li>
+            ))}
+          </ul>
+          <button className="btn-primary mt-6 px-10">Got it</button>
         </div>
       )}
     </div>
@@ -146,7 +155,17 @@ function MyCard({ view }: { view: PlayerView }) {
             )}
           </div>
         ) : (
-          <div className="mt-2 text-sm text-zinc-400">Find the killer. Some players will lie to you, and some notes are forged.</div>
+          <ol className="mt-3 flex flex-col gap-1.5 text-sm">
+            <li>
+              <span className="text-sky-300">1.</span> Clue notes describe the <b>killer</b> — their coat, drink, phone…
+            </li>
+            <li>
+              <span className="text-sky-300">2.</span> Ask players about themselves and find who <b>matches</b>.
+            </li>
+            <li>
+              <span className="text-sky-300">3.</span> Watch out: people can <b>lie</b>, and some notes are <b>forged</b>.
+            </li>
+          </ol>
         )}
       </div>
 

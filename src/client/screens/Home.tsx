@@ -69,7 +69,7 @@ export function Home({ api, connected }: { api: Api; connected: boolean }) {
               </button>
             ))}
           </div>
-          <button className="btn-ghost" disabled={busy || !connected} onClick={() => run(() => api.botGame({ players: botPlayers, level: botLevel, cases: 3, pace: 'quick' }))}>
+          <button className="btn-ghost" disabled={busy || !connected} onClick={() => run(() => api.botGame({ players: botPlayers, level: botLevel, cases: 3 }))}>
             Watch bots play
           </button>
         </div>

@@ -2,11 +2,10 @@
 import type { SpectatorView } from '../../engine/views.ts';
 import { ROUND_LABELS } from '../../shared/rules.ts';
 import type { Api } from '../net.ts';
-import { ICON, formatClock } from '../ui.tsx';
+import { ICON } from '../ui.tsx';
 
 export function Spectator({ view, api }: { view: SpectatorView & { speed: number }; api: Api }) {
   const c = view.case;
-  const remaining = view.roundEndsAt ? Math.max(0, view.roundEndsAt - view.serverNow) / view.speed : 0;
   const role = (id: string) => (c?.killerId === id ? '🔪' : c?.accompliceIds.includes(id) ? '🤝' : c?.patsyId === id ? '🎯' : '');
   const results = view.results;
   return (
@@ -18,7 +17,9 @@ export function Spectator({ view, api }: { view: SpectatorView & { speed: number
             {view.phase === 'over' ? 'Game over' : view.round ? `Case ${view.caseIndex + 1}: ${ROUND_LABELS[view.round].title}` : 'Starting…'}
           </div>
         </div>
-        <div className="font-mono text-xl">{formatClock(remaining)}</div>
+        <div className="max-w-[40%] text-right text-xs text-zinc-400">
+          {view.waitingOn.length ? `Waiting on ${view.waitingOn.map((w) => view.players.find((p) => p.id === w.playerId)?.name).join(', ')}` : ''}
+        </div>
       </div>
       <div className="flex gap-2">
         {[1, 4, 20].map((s) => (

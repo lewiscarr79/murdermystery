@@ -75,23 +75,25 @@ export function Lobby({ view, api }: { view: PlayerView; api: Api }) {
               </div>
             </div>
             <div>
-              <div className="mb-1 text-zinc-400">Pace</div>
+              <div className="mb-1 text-zinc-400">Practice case first</div>
               <div className="flex gap-2">
-                {(['quick', 'standard'] as const).map((p) => (
-                  <button key={p} className={`chip flex-1 py-2 capitalize ${view.settings.pace === p ? 'border-accent text-white' : ''}`} onClick={() => api.lobby({ type: 'settings', pace: p })}>
-                    {p}
+                {[true, false].map((p) => (
+                  <button key={String(p)} className={`chip flex-1 py-2 ${view.settings.practice === p ? 'border-accent text-white' : ''}`} onClick={() => api.lobby({ type: 'settings', practice: p })}>
+                    {p ? 'Yes' : 'No'}
                   </button>
                 ))}
               </div>
             </div>
           </div>
+          <p className="text-xs text-zinc-500">No timers: each round moves on once everyone has finished. Everyone can see who the game is waiting on.</p>
           <button className="btn-primary py-4 text-lg" disabled={need > 0} onClick={() => api.lobby({ type: 'start' })}>
             Start the party
           </button>
         </div>
       ) : (
         <div className="card text-center text-zinc-400">
-          Waiting for the host to start… {view.settings.cases} case{view.settings.cases > 1 ? 's' : ''}, {view.settings.pace} pace.
+          Waiting for the host to start… {view.settings.cases} case{view.settings.cases > 1 ? 's' : ''}
+          {view.settings.practice ? ' plus a guided practice case first' : ''}.
         </div>
       )}
       <button className="text-sm text-zinc-500" onClick={api.leave}>
