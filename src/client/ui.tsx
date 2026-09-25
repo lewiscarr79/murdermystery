@@ -2,6 +2,7 @@
 import type { ReactNode } from 'react';
 import type { NoteIcon, NoteView, QuestionDim } from '../shared/types.ts';
 import type { PlayerView } from '../shared/view.ts';
+import { noteMeaning } from '../shared/profile.ts';
 
 export const DIM_LABEL: Record<QuestionDim, string> = {
   coat: 'Coat',
@@ -40,7 +41,22 @@ export function Name({ view, id, small }: { view: PlayerView; id: string; small?
   );
 }
 
-export function NoteCard({ note, dim, locked, onClick, action }: { note: NoteView; dim?: boolean; locked?: boolean; onClick?: () => void; action?: ReactNode }) {
+export function NoteCard({
+  note,
+  view,
+  dim,
+  locked,
+  onClick,
+  action,
+}: {
+  note: NoteView;
+  view?: PlayerView;
+  dim?: boolean;
+  locked?: boolean;
+  onClick?: () => void;
+  action?: ReactNode;
+}) {
+  const meaning = view ? noteMeaning(note, (id) => who(view, id).character) : null;
   return (
     <div
       onClick={onClick}
@@ -48,7 +64,12 @@ export function NoteCard({ note, dim, locked, onClick, action }: { note: NoteVie
     >
       <div className="text-2xl leading-none">{ICON[note.icon]}</div>
       <div className="flex-1 text-sm leading-snug">
-        {note.text}
+        {meaning && (
+          <div className={`mb-1 font-semibold ${dim ? 'text-zinc-300' : note.fact.kind === 'killer' ? 'text-gold' : 'text-sky-200'}`}>
+            {meaning.icon} {meaning.text}
+          </div>
+        )}
+        <div className={meaning ? 'text-xs text-zinc-400' : ''}>{note.text}</div>
         {locked && <div className="mt-1 text-xs text-gold">Committed to a trade…</div>}
       </div>
       {action}

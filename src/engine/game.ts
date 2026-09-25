@@ -9,13 +9,13 @@ import {
   REQUESTS_PER_TRADING_ROUND,
   ROUND_ACTIONS,
   ROUND_ORDER,
-  SHOWS_PER_TRADING_ROUND,
   START_COUNTDOWN_MS,
   alliancesEnabled,
   isQuestionRound,
   isTradingRound,
   maxAllies,
   questionsPerRound,
+  hasWrapUp,
   statementsPerRound,
   suspectStatementAllowed,
 } from '../shared/rules.ts';
@@ -105,6 +105,8 @@ export interface CaseState {
   counters: Record<string, Counters>;
   /** "I'm finished" taps this round. A player is finished once ready and nothing is waiting on them. */
   ready: Record<string, boolean>;
+  /** Per player: doing the round's main step, or at the end-of-round step (statement + alliance). */
+  stage: Record<string, 'main' | 'wrap'>;
   accusations: Record<string, { targetId: string; stake: Stake; at: number }>;
   /** Holders of each note in order, for the reveal's forgery trails. */
   trails: Record<string, string[]>;
@@ -243,6 +245,7 @@ export type WaitReason =
   | 'waiting on their own request'
   | 'reading'
   | 'still investigating'
+  | 'wrapping up the round'
   | "hasn't accused yet"
   | 'looking at the results';
 
@@ -260,14 +263,16 @@ export function obligations(state: GameState, pid: string): WaitReason[] {
       c.gives.some((g) => g.status === 'pending' && g.toId === pid) ||
       c.alliances.some((a) => a.status === 'pending' && a.toId === pid);
     if (incoming) out.push('responding to a request');
-    // Only requests to someone still here hold you up.
-    const active = new Set(activePlayers(state).map((p) => p.id));
-    const outgoing =
-      c.swaps.some((s) => s.kind === 'request' && s.status === 'pending' && s.members[0] === pid && active.has(s.members[1])) ||
-      c.gives.some((g) => g.status === 'pending' && g.fromId === pid && active.has(g.toId)) ||
-      c.alliances.some((a) => a.status === 'pending' && a.fromId === pid && active.has(a.toId));
-    if (outgoing) out.push('waiting on their own request');
+  } else if (c.alliances.some((a) => a.status === 'pending' && a.toId === pid)) {
+    out.push('responding to a request');
   }
+  // Only requests to someone still here hold you up.
+  const active = new Set(activePlayers(state).map((p) => p.id));
+  const outgoing =
+    c.swaps.some((s) => s.kind === 'request' && s.status === 'pending' && s.members[0] === pid && active.has(s.members[1])) ||
+    c.gives.some((g) => g.status === 'pending' && g.fromId === pid && active.has(g.toId)) ||
+    c.alliances.some((a) => a.status === 'pending' && a.fromId === pid && active.has(a.toId));
+  if (outgoing) out.push('waiting on their own request');
   return out;
 }
 
@@ -287,8 +292,17 @@ export function waitingOn(state: GameState): { playerId: string; reason: WaitRea
     .map((p) => {
       const ob = obligations(state, p.id);
       if (ob.length) return { playerId: p.id, reason: ob[0] };
+      const c = state.current!;
       const reason: WaitReason =
-        round === 'accusation' ? "hasn't accused yet" : round === 'reveal' ? 'looking at the results' : round === 'briefing' || round === 'evidence' ? 'reading' : 'still investigating';
+        round === 'accusation'
+          ? "hasn't accused yet"
+          : round === 'reveal'
+            ? 'looking at the results'
+            : c.stage[p.id] === 'wrap'
+              ? 'wrapping up the round'
+              : round === 'briefing' || round === 'evidence'
+                ? 'reading'
+                : 'still investigating';
       return { playerId: p.id, reason };
     });
 }
@@ -340,6 +354,7 @@ function beginCase(state: GameState, now: number, events: GameEvent[]) {
     liesLeft: perPlayer(() => LIES_PER_CASE),
     counters: perPlayer(freshCounters),
     ready: {},
+    stage: {},
     accusations: {},
     trails: {},
     log: [],
@@ -357,6 +372,7 @@ function enterRound(state: GameState, round: RoundId, now: number, events: GameE
   state.round = round;
   state.roundStartedAt = now;
   c.ready = {};
+  c.stage = {};
   for (const id of Object.keys(c.counters)) c.counters[id] = freshCounters();
   events.push({ type: 'round', round });
   log(state, now, `— ${round} —`);
@@ -493,10 +509,17 @@ export function act(state: GameState, pid: string, action: Action, now: number):
   const n = state.players.length;
   const isPlayer = (id: string | undefined) => !!id && id !== pid && state.players.some((p) => p.id === id);
   const counters = c.counters[pid];
+  const wrapping = c.stage[pid] === 'wrap';
+  const MAIN_ONLY: Action['type'][] = ['ask', 'requestSwap', 'give', 'show'];
+  const WRAP_ONLY: Action['type'][] = ['statement', 'proposeAlliance'];
+  if (wrapping && MAIN_ONLY.includes(action.type)) return fail("You've moved on to the end of the round");
+  if (!wrapping && hasWrapUp(state.round) && WRAP_ONLY.includes(action.type)) return fail('Finish the main step first — statements and alliances come at the end of the round');
 
   switch (action.type) {
     case 'done':
-      c.ready[pid] = true;
+      // Wrap-up rounds are two steps: finish the main step, then the end-of-round step.
+      if (hasWrapUp(state.round) && c.stage[pid] !== 'wrap') c.stage[pid] = 'wrap';
+      else c.ready[pid] = true;
       return ok();
 
     case 'cancelRequest': {
@@ -563,7 +586,7 @@ export function act(state: GameState, pid: string, action: Action, now: number):
     case 'requestSwap': {
       if (!isPlayer(action.targetId)) return fail('Pick another player');
       const allyFree = alliesOf(state, pid).includes(action.targetId);
-      if (!allyFree && counters.requests >= REQUESTS_PER_TRADING_ROUND) return fail('No swap requests left this round');
+      if (!allyFree && counters.requests >= REQUESTS_PER_TRADING_ROUND) return fail('You already made your move this round');
       if (hasPendingOutgoing(state, pid)) return fail('Wait for your current request to be answered');
       if (!c.hands[pid].length || !c.hands[action.targetId].length) return fail('Both players need a note to swap');
       if (!allyFree) counters.requests += 1;
@@ -607,7 +630,7 @@ export function act(state: GameState, pid: string, action: Action, now: number):
 
     case 'give': {
       if (!isPlayer(action.targetId)) return fail('Pick another player');
-      if (counters.requests >= REQUESTS_PER_TRADING_ROUND) return fail('No requests left this round');
+      if (counters.requests >= REQUESTS_PER_TRADING_ROUND) return fail('You already made your move this round');
       if (hasPendingOutgoing(state, pid)) return fail('Wait for your current request to be answered');
       if (!c.hands[pid].includes(action.noteId)) return fail("That note isn't in your hand");
       if (lockedNotes(state).has(action.noteId)) return fail('That note is already committed elsewhere');
@@ -635,8 +658,9 @@ export function act(state: GameState, pid: string, action: Action, now: number):
 
     case 'show': {
       if (!isPlayer(action.targetId)) return fail('Pick another player');
-      if (counters.shows >= SHOWS_PER_TRADING_ROUND) return fail('No shows left this round');
+      if (counters.requests >= REQUESTS_PER_TRADING_ROUND) return fail('You already made your move this round');
       if (!c.hands[pid].includes(action.noteId)) return fail("That note isn't in your hand");
+      counters.requests += 1;
       counters.shows += 1;
       const t = action.targetId;
       if (!c.hands[t].includes(action.noteId) && !c.seen[t].includes(action.noteId)) c.seen[t].push(action.noteId);

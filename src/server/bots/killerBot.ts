@@ -57,11 +57,7 @@ export function killerTrade(cv: CaseView, mem: Memory, rng: Rng, me: string): Ac
   const innocents = Object.keys(cv.cast).filter((id) => !side.has(id) && id !== briefing.patsyId);
   const targets = briefing.tipOff.map((t) => t.playerId).filter((id) => !side.has(id));
 
-  if (cv.alliancesEnabled && !mem.proposedAlliance && cv.allies.length === 0 && rng.chance(0.5)) {
-    mem.proposedAlliance = true;
-    const target = targets.length ? rng.pick(targets) : rng.pick(innocents);
-    if (target) return { type: 'proposeAlliance', targetId: target };
-  }
+
   const forged = forgeries(cv, mem).filter((n) => !cv.lockedNoteIds.includes(n.id));
   if (!busy && cv.left.requests > 0 && forged.length && rng.chance(0.5)) {
     const target = rng.pick([...cv.allies.filter((a) => !side.has(a)), ...innocents]);

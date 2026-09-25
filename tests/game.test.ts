@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { act, addPlayer, createGame, hostAdvance, isFinished, nextDeadline, setConnected, startGame, tick, waitingOn, type GameState } from '../src/engine/game.ts';
 import { playerView } from '../src/engine/views.ts';
-import { ROUND_ORDER } from '../src/shared/rules.ts';
+import { ROUND_ORDER, hasWrapUp } from '../src/shared/rules.ts';
 import type { Action, RoundId } from '../src/shared/types.ts';
 
 function setup(n: number, seed = 1): { s: GameState; ids: string[]; now: number } {
@@ -29,6 +29,12 @@ function must(s: GameState, pid: string, a: Action, now: number) {
   const r = act(s, pid, a, now);
   if (!r.ok) throw new Error(r.error);
   return r.events;
+}
+
+/** Tap "I'm finished" through both steps of the round. */
+function finish(s: GameState, pid: string, now: number) {
+  must(s, pid, { type: 'done' }, now);
+  if (hasWrapUp(s.round!)) must(s, pid, { type: 'done' }, now);
 }
 
 /** Everyone makes their forced-swap pick. */
@@ -70,8 +76,8 @@ describe('game flow', () => {
           for (const sw of s.current!.swaps.filter((x) => x.status === 'picking' && x.members.includes(id) && !x.picks[id])) {
             must(s, id, { type: 'pickSwap', swapId: sw.id, noteId: s.current!.hands[id].find((n) => !Object.values(sw.picks).includes(n))! }, now);
           }
-          must(s, id, { type: 'done' }, now);
-        } else must(s, id, { type: 'done' }, now);
+          finish(s, id, now);
+        } else finish(s, id, now);
       }
       tick(s, now);
       if (s.caseIndex === 0) seen.push(s.round!);
@@ -83,7 +89,7 @@ describe('game flow', () => {
     const { s, ids } = setup(6);
     const now = goTo(s, 'questioning');
     must(s, ids[0], { type: 'ask', targetId: ids[1], dim: 'coat' }, now);
-    for (const id of ids) must(s, id, { type: 'done' }, now);
+    for (const id of ids) finish(s, id, now);
     tick(s, now);
     expect(s.round).toBe('questioning');
     expect(isFinished(s, ids[1])).toBe(false);
@@ -98,7 +104,7 @@ describe('game flow', () => {
   it('a new question makes a finished player unfinished again', () => {
     const { s, ids } = setup(6);
     const now = goTo(s, 'questioning');
-    must(s, ids[1], { type: 'done' }, now);
+    finish(s, ids[1], now);
     expect(isFinished(s, ids[1])).toBe(true);
     must(s, ids[0], { type: 'ask', targetId: ids[1], dim: 'drink' }, now);
     expect(isFinished(s, ids[1])).toBe(false);
@@ -109,7 +115,7 @@ describe('game flow', () => {
     const now = goTo(s, 'questioning');
     must(s, ids[0], { type: 'ask', targetId: ids[5], dim: 'coat' }, now);
     setConnected(s, ids[5], false);
-    for (const id of ids.slice(0, 5)) must(s, id, { type: 'done' }, now);
+    for (const id of ids.slice(0, 5)) finish(s, id, now);
     tick(s, now);
     expect(s.round).toBe('trading');
     expect(s.current!.questions[0].answer!.mode).toBe('nocomment');
@@ -145,9 +151,12 @@ describe('game flow', () => {
     expect(act(s, ids[0], { type: 'requestSwap', targetId: ids[1] }, now).ok).toBe(false);
   });
 
-  it('ends a round early once everyone taps Done', () => {
+  it('moves on as soon as everyone has finished both steps', () => {
     const { s, ids } = setup(5);
     const now = goTo(s, 'evidence');
+    for (const id of ids) must(s, id, { type: 'done' }, now + 10);
+    tick(s, now + 10);
+    expect(s.round).toBe('evidence'); // everyone is at the end-of-round step
     for (const id of ids) must(s, id, { type: 'done' }, now + 10);
     tick(s, now + 10);
     expect(s.round).toBe('questioning');
@@ -269,7 +278,7 @@ describe('trading', () => {
     resolveForced(s, now);
     must(s, ids[0], { type: 'requestSwap', targetId: ids[1] }, now);
     const s1 = s.current!.swaps[s.current!.swaps.length - 1];
-    for (const id of ids) must(s, id, { type: 'done' }, now);
+    for (const id of ids) finish(s, id, now);
     tick(s, now + 600_000);
     expect(s.round).toBe('trading');
     expect(waitingOn(s).map((w) => w.reason).sort()).toEqual(['responding to a request', 'waiting on their own request']);
@@ -293,19 +302,37 @@ describe('trading', () => {
     expect(r.ok && r.events.some((e) => e.type === 'toast' && e.to === ids[0])).toBe(true);
   });
 
-  it('limits requests to 2 per round but lets allies swap freely', () => {
+  it('allows one optional move per trading round, but allies swap freely', () => {
     const { s, ids } = setup(6);
-    const now = goTo(s, 'trading');
-    resolveForced(s, now);
+    let now = goTo(s, 'questioning');
     const [a, b, c, d] = ids;
+    // Alliances are formed in the end-of-round step.
+    expect(act(s, a, { type: 'proposeAlliance', targetId: d }, now).ok).toBe(false);
+    must(s, a, { type: 'done' }, now);
     must(s, a, { type: 'proposeAlliance', targetId: d }, now);
     must(s, d, { type: 'respondAlliance', allianceId: s.current!.alliances[0].id, accept: true }, now);
-    for (const t of [b, c]) {
-      must(s, a, { type: 'requestSwap', targetId: t }, now);
-      must(s, t, { type: 'respondSwap', swapId: s.current!.swaps.at(-1)!.id, accept: false }, now);
-    }
-    expect(act(s, a, { type: 'requestSwap', targetId: ids[4] }, now).ok).toBe(false);
+    now = goTo(s, 'trading');
+    resolveForced(s, now);
+    must(s, a, { type: 'requestSwap', targetId: b }, now);
+    must(s, b, { type: 'respondSwap', swapId: s.current!.swaps.at(-1)!.id, accept: false }, now);
+    expect(act(s, a, { type: 'requestSwap', targetId: c }, now).ok).toBe(false);
+    expect(act(s, a, { type: 'show', targetId: c, noteId: s.current!.hands[a][0] }, now).ok).toBe(false);
     expect(act(s, a, { type: 'requestSwap', targetId: d }, now).ok).toBe(true);
+  });
+
+  it('splits each round into a main step then an end-of-round step', () => {
+    const { s, ids } = setup(6);
+    const now = goTo(s, 'questioning');
+    expect(act(s, ids[0], { type: 'statement', statementType: 'vouch', targetId: ids[1] }, now).ok).toBe(false);
+    must(s, ids[0], { type: 'done' }, now);
+    expect(s.current!.stage[ids[0]]).toBe('wrap');
+    expect(isFinished(s, ids[0])).toBe(false);
+    expect(act(s, ids[0], { type: 'ask', targetId: ids[1], dim: 'coat' }, now).ok).toBe(false);
+    must(s, ids[0], { type: 'statement', statementType: 'vouch', targetId: ids[1] }, now);
+    expect(act(s, ids[0], { type: 'statement', statementType: 'lied', targetId: ids[2] }, now).ok).toBe(false); // one per round
+    must(s, ids[0], { type: 'done' }, now);
+    expect(isFinished(s, ids[0])).toBe(true);
+    expect(waitingOn(s).find((w) => w.playerId === ids[0])).toBeUndefined();
   });
 
   it('gives and shows notes; shows flash and land in "seen" only, with a limit', () => {
@@ -318,13 +345,13 @@ describe('trading', () => {
     expect(events[0]).toMatchObject({ type: 'flash', to: b, noteId: note });
     expect(s.current!.seen[b]).toContain(note);
     expect(s.current!.hands[a]).toContain(note);
-    must(s, a, { type: 'show', targetId: c, noteId: note }, now);
-    expect(act(s, a, { type: 'show', targetId: d, noteId: note }, now).ok).toBe(false);
+    expect(act(s, a, { type: 'show', targetId: c, noteId: note }, now).ok).toBe(false); // one move per round
 
-    must(s, a, { type: 'give', targetId: d, noteId: note }, now);
+    const note2 = s.current!.hands[c][0];
+    must(s, c, { type: 'give', targetId: d, noteId: note2 }, now);
     must(s, d, { type: 'respondGive', giveId: s.current!.gives[0].id, accept: true }, now);
-    expect(s.current!.hands[d]).toContain(note);
-    expect(s.current!.hands[a]).not.toContain(note);
+    expect(s.current!.hands[d]).toContain(note2);
+    expect(s.current!.hands[c]).not.toContain(note2);
   });
 
   it('disables alliances at 4 players and caps allies', () => {
@@ -334,22 +361,25 @@ describe('trading', () => {
 
     const { s, ids } = setup(6);
     const now = goTo(s, 'trading');
+    resolveForced(s, now);
+    must(s, ids[0], { type: 'done' }, now);
     must(s, ids[0], { type: 'proposeAlliance', targetId: ids[1] }, now);
     must(s, ids[1], { type: 'respondAlliance', allianceId: s.current!.alliances[0].id, accept: true }, now);
     expect(act(s, ids[0], { type: 'proposeAlliance', targetId: ids[2] }, now).ok).toBe(false);
   });
 
-  it('limits statements by size and drops "I suspect" at 10+', () => {
+  it('allows one statement per round and drops "I suspect" at 10+', () => {
     const small = setup(6);
-    const n6 = goTo(small.s, 'questioning');
-    for (let i = 0; i < 3; i++) must(small.s, 'p0', { type: 'statement', statementType: 'vouch', targetId: 'p1' }, n6);
+    const n6 = goTo(small.s, 'evidence');
+    must(small.s, 'p0', { type: 'done' }, n6);
+    must(small.s, 'p0', { type: 'statement', statementType: 'suspect', targetId: 'p1' }, n6);
     expect(act(small.s, 'p0', { type: 'statement', statementType: 'vouch', targetId: 'p1' }, n6).ok).toBe(false);
 
     const big = setup(10);
     const n10 = goTo(big.s, 'questioning');
+    must(big.s, 'p0', { type: 'done' }, n10);
     expect(act(big.s, 'p0', { type: 'statement', statementType: 'suspect', targetId: 'p1' }, n10).ok).toBe(false);
     must(big.s, 'p0', { type: 'statement', statementType: 'wasAt', value: 'Rooftop bar' }, n10);
-    expect(act(big.s, 'p0', { type: 'statement', statementType: 'lied', targetId: 'p1' }, n10).ok).toBe(false);
   });
 });
 

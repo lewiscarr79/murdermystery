@@ -80,6 +80,8 @@ export interface CaseView {
   accusation?: { targetId: string; stake: Stake };
   /** Tapped "I'm finished" this round. */
   ready: boolean;
+  /** Main step, or the end-of-round step (statement + alliance). */
+  stage: 'main' | 'wrap';
   /** Ready and nothing is waiting on me. */
   finished: boolean;
   questions: Record<QuestionDim, string>;

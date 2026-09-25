@@ -27,7 +27,9 @@ export const ROUND_LABELS: Record<RoundId, { title: string; hint: string }> = {
 };
 
 const ALWAYS: ActionType[] = ['mark', 'pin', 'done'];
-const QUESTIONING: ActionType[] = [...ALWAYS, 'ask', 'answer', 'statement'];
+/** The end-of-round step: say something (or not) and team up (or go it alone). */
+const WRAP: ActionType[] = ['statement', 'proposeAlliance', 'respondAlliance', 'cancelRequest'];
+const QUESTIONING: ActionType[] = [...ALWAYS, ...WRAP, 'ask', 'answer'];
 const TRADING: ActionType[] = [
   ...ALWAYS,
   'requestSwap',
@@ -36,15 +38,12 @@ const TRADING: ActionType[] = [
   'give',
   'respondGive',
   'show',
-  'proposeAlliance',
-  'respondAlliance',
-  'cancelRequest',
-  'statement',
+  ...WRAP,
 ];
 
 export const ROUND_ACTIONS: Record<RoundId, ActionType[]> = {
   briefing: ['done'],
-  evidence: ALWAYS,
+  evidence: [...ALWAYS, ...WRAP],
   questioning: QUESTIONING,
   trading: TRADING,
   evidence2: QUESTIONING,
@@ -93,18 +92,26 @@ export function questionsPerRound(n: number): number {
   return n >= 10 ? 3 : 2;
 }
 
-export function statementsPerRound(n: number): number {
-  if (n >= 10) return 1;
-  if (n >= 7) return 2;
-  return 3;
+/** Rounds with an end-of-round step (statement + alliance) after the main step. */
+export const WRAP_ROUNDS: RoundId[] = ['evidence', 'questioning', 'trading', 'evidence2', 'finalTrades'];
+
+export function hasWrapUp(r: RoundId): boolean {
+  return WRAP_ROUNDS.includes(r);
+}
+
+/** One statement per round, made in the end-of-round step. */
+export function statementsPerRound(_n: number): number {
+  return 1;
 }
 
 export function suspectStatementAllowed(n: number): boolean {
   return n < 10;
 }
 
-export const REQUESTS_PER_TRADING_ROUND = 2;
-export const SHOWS_PER_TRADING_ROUND = 2;
+/** Besides the forced swap, one optional move per trading round: a swap request, a give or a show.
+ *  Swaps with an ally don't use it up. */
+export const REQUESTS_PER_TRADING_ROUND = 1;
+export const SHOWS_PER_TRADING_ROUND = 1;
 
 export function alliancesEnabled(n: number): boolean {
   return n >= 5;

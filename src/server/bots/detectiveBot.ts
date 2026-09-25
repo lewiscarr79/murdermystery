@@ -77,12 +77,7 @@ export function detectiveTrade(view: PlayerView, cv: CaseView, d: Deductions, me
   const inForced = cv.swaps.some((s) => s.kind === 'forced' && s.status === 'picking');
   if (inForced) return null;
 
-  if (cv.alliancesEnabled && !mem.proposedAlliance && cv.allies.length === 0 && rng.chance(0.35)) {
-    mem.proposedAlliance = true;
-    const mates = cv.card.witnesses.filter((w) => !d.ranking.slice(0, 2).includes(w));
-    const target = mates.length ? rng.pick(mates) : rng.pick(d.ranking.slice(-3));
-    if (target) return { type: 'proposeAlliance', targetId: target };
-  }
+
   if (!busyWithRequest && cv.left.requests > 0 && cv.hand.length && rng.chance(0.55)) {
     const pool = [...cv.allies, ...d.ranking.slice(2)].filter((id) => id !== me);
     if (pool.length) return { type: 'requestSwap', targetId: rng.pick(pool) };
