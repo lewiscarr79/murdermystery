@@ -1,21 +1,28 @@
 import { describe, expect, it } from 'vitest';
-import { act, addPlayer, createGame, nextDeadline, startGame, tick, type GameState } from '../src/engine/game.ts';
+import { act, addPlayer, createGame, hostAdvance, isFinished, nextDeadline, setConnected, startGame, tick, waitingOn, type GameState } from '../src/engine/game.ts';
 import { playerView } from '../src/engine/views.ts';
-import { ROUND_ORDER, roundDurationMs } from '../src/shared/rules.ts';
+import { ROUND_ORDER } from '../src/shared/rules.ts';
 import type { Action, RoundId } from '../src/shared/types.ts';
 
 function setup(n: number, seed = 1): { s: GameState; ids: string[]; now: number } {
   const s = createGame('ABCD', { id: 'p0', name: 'P0' }, seed);
   for (let i = 1; i < n; i++) addPlayer(s, { id: `p${i}`, name: `P${i}` });
   s.settings.cases = 2;
+  s.settings.practice = false;
   startGame(s, 0);
   tick(s, 3000);
   return { s, ids: s.players.map((p) => p.id), now: 3000 };
 }
 
+let clock = 10_000;
+/** Jump rounds using the host's skip, so each test can focus on one round. */
 function goTo(s: GameState, round: RoundId): number {
-  while (s.round !== round) tick(s, s.roundEndsAt!);
-  return s.roundStartedAt!;
+  while (s.round !== round) hostAdvance(s, s.hostId, (clock += 1000));
+  return clock;
+}
+
+function skipAll(s: GameState) {
+  while (s.phase === 'playing') hostAdvance(s, s.hostId, (clock += 1000));
 }
 
 function must(s: GameState, pid: string, a: Action, now: number) {
@@ -24,13 +31,24 @@ function must(s: GameState, pid: string, a: Action, now: number) {
   return r.events;
 }
 
+/** Everyone makes their forced-swap pick. */
+function resolveForced(s: GameState, now: number) {
+  for (const sw of s.current!.swaps.filter((x) => x.kind === 'forced' && x.status === 'picking')) {
+    for (const m of sw.members) {
+      if (sw.status !== 'picking' || sw.picks[m]) continue;
+      must(s, m, { type: 'pickSwap', swapId: sw.id, noteId: s.current!.hands[m][0] }, now);
+    }
+  }
+}
+
 const killerSide = (s: GameState) => [s.current!.gen.killerId, ...s.current!.gen.accompliceIds];
 const detectives = (s: GameState) => s.players.map((p) => p.id).filter((id) => !killerSide(s).includes(id));
 
 describe('game flow', () => {
-  it('counts down, then runs every round in order on deadlines', () => {
+  it('counts down, then advances each round only once every active player is finished', () => {
     const s = createGame('ABCD', { id: 'p0', name: 'P0' }, 3);
     for (let i = 1; i < 6; i++) addPlayer(s, { id: `p${i}`, name: `P${i}` });
+    s.settings.practice = false;
     expect(startGame(s, 1000).ok).toBe(true);
     expect(s.phase).toBe('starting');
     expect(nextDeadline(s)).toBe(4000);
@@ -38,13 +56,71 @@ describe('game flow', () => {
     expect(s.phase).toBe('starting');
     tick(s, 4000);
     expect(s.round).toBe('briefing');
-    expect(s.roundEndsAt).toBe(4000 + roundDurationMs('briefing', 'standard', 6));
+    expect(nextDeadline(s)).toBeNull(); // no round timers
+    const ids = s.players.map((p) => p.id);
     const seen: RoundId[] = [s.round!];
+    let now = 5000;
     while (s.caseIndex === 0 && s.phase === 'playing') {
-      tick(s, s.roundEndsAt!);
+      tick(s, (now += 60_000));
+      expect(seen[seen.length - 1]).toBe(s.round); // time alone never moves the round on
+      const round = s.round!;
+      for (const id of ids) {
+        if (round === 'accusation') must(s, id, { type: 'accuse', targetId: ids.find((x) => x !== id)!, stake: 'hunch' }, now);
+        else if (round === 'trading' || round === 'finalTrades') {
+          for (const sw of s.current!.swaps.filter((x) => x.status === 'picking' && x.members.includes(id) && !x.picks[id])) {
+            must(s, id, { type: 'pickSwap', swapId: sw.id, noteId: s.current!.hands[id].find((n) => !Object.values(sw.picks).includes(n))! }, now);
+          }
+          must(s, id, { type: 'done' }, now);
+        } else must(s, id, { type: 'done' }, now);
+      }
+      tick(s, now);
       if (s.caseIndex === 0) seen.push(s.round!);
     }
     expect(seen).toEqual(ROUND_ORDER);
+  });
+
+  it('waits for unanswered questions and lists who is holding things up', () => {
+    const { s, ids } = setup(6);
+    const now = goTo(s, 'questioning');
+    must(s, ids[0], { type: 'ask', targetId: ids[1], dim: 'coat' }, now);
+    for (const id of ids) must(s, id, { type: 'done' }, now);
+    tick(s, now);
+    expect(s.round).toBe('questioning');
+    expect(isFinished(s, ids[1])).toBe(false);
+    expect(waitingOn(s)).toEqual([{ playerId: ids[1], reason: 'answering a question' }]);
+    // The reason is vague: it never names the asker or the question.
+    expect(JSON.stringify(waitingOn(s))).not.toContain(ids[0]);
+    must(s, ids[1], { type: 'answer', questionId: s.current!.questions[0].id, mode: 'truth' }, now);
+    tick(s, now);
+    expect(s.round).toBe('trading');
+  });
+
+  it('a new question makes a finished player unfinished again', () => {
+    const { s, ids } = setup(6);
+    const now = goTo(s, 'questioning');
+    must(s, ids[1], { type: 'done' }, now);
+    expect(isFinished(s, ids[1])).toBe(true);
+    must(s, ids[0], { type: 'ask', targetId: ids[1], dim: 'drink' }, now);
+    expect(isFinished(s, ids[1])).toBe(false);
+  });
+
+  it('never waits on disconnected players and resolves their pending items', () => {
+    const { s, ids } = setup(6);
+    const now = goTo(s, 'questioning');
+    must(s, ids[0], { type: 'ask', targetId: ids[5], dim: 'coat' }, now);
+    setConnected(s, ids[5], false);
+    for (const id of ids.slice(0, 5)) must(s, id, { type: 'done' }, now);
+    tick(s, now);
+    expect(s.round).toBe('trading');
+    expect(s.current!.questions[0].answer!.mode).toBe('nocomment');
+  });
+
+  it('lets the host move on without stragglers', () => {
+    const { s, ids } = setup(5);
+    const now = goTo(s, 'evidence');
+    expect(hostAdvance(s, ids[1], now).ok).toBe(false);
+    expect(hostAdvance(s, ids[0], now).ok).toBe(true);
+    expect(s.round).toBe('questioning');
   });
 
   it('refuses to start below 4 players', () => {
@@ -62,12 +138,11 @@ describe('game flow', () => {
     expect(s.current!.announcements).toHaveLength(2);
   });
 
-  it('rejects actions outside their round and after the deadline', () => {
+  it('rejects actions outside their round', () => {
     const { s, ids } = setup(6);
     const now = goTo(s, 'evidence');
     expect(act(s, ids[0], { type: 'ask', targetId: ids[1], dim: 'coat' }, now).ok).toBe(false);
-    goTo(s, 'questioning');
-    expect(act(s, ids[0], { type: 'ask', targetId: ids[1], dim: 'coat' }, s.roundEndsAt! + 1).ok).toBe(false);
+    expect(act(s, ids[0], { type: 'requestSwap', targetId: ids[1] }, now).ok).toBe(false);
   });
 
   it('ends a round early once everyone taps Done', () => {
@@ -80,9 +155,28 @@ describe('game flow', () => {
 
   it('finishes after the configured number of cases', () => {
     const { s } = setup(4);
-    while (s.phase === 'playing') tick(s, s.roundEndsAt!);
+    skipAll(s);
     expect(s.phase).toBe('over');
     expect(s.results).toHaveLength(2);
+  });
+
+  it('adds a practice case first whose points do not count', () => {
+    const s = createGame('ABCD', { id: 'p0', name: 'P0' }, 9);
+    for (let i = 1; i < 6; i++) addPlayer(s, { id: `p${i}`, name: `P${i}` });
+    s.settings.cases = 2;
+    startGame(s, 0);
+    tick(s, 3000);
+    goTo(s, 'accusation');
+    const killer = s.current!.gen.killerId;
+    const det = s.players.map((p) => p.id).find((id) => id !== killer && !s.current!.gen.accompliceIds.includes(id))!;
+    must(s, det, { type: 'accuse', targetId: killer, stake: 'sure' }, clock);
+    goTo(s, 'reveal');
+    expect(s.current!.result!.practice).toBe(true);
+    expect(s.current!.result!.scores[det].total).toBe(100);
+    expect(s.players.every((p) => p.score === 0)).toBe(true);
+    skipAll(s);
+    expect(s.results).toHaveLength(3);
+    expect(s.results.filter((r) => r.practice)).toHaveLength(1);
   });
 });
 
@@ -110,8 +204,8 @@ describe('questioning', () => {
     const askerView = playerView(s, ids[0], now).case!;
     expect(askerView.asked.every((a) => a.answer?.mode !== 'lie')).toBe(true);
 
-    // Unanswered questions become "No comment" when the round ends.
-    tick(s, s.roundEndsAt!);
+    // Unanswered questions become "No comment" if the host moves on.
+    hostAdvance(s, s.hostId, now);
     expect(qs[2].answer!.mode).toBe('nocomment');
   });
 
@@ -133,13 +227,16 @@ describe('questioning', () => {
 });
 
 describe('trading', () => {
-  it('creates forced blind swaps with a trio when numbers are odd, auto-picking at the deadline', () => {
+  it('creates forced blind swaps with a trio when numbers are odd, waiting for every pick', () => {
     const { s } = setup(7);
     const now = goTo(s, 'trading');
     const forced = s.current!.swaps.filter((x) => x.kind === 'forced');
     expect(forced.map((f) => f.members.length).sort()).toEqual([2, 2, 3]);
+    expect(waitingOn(s).every((w) => w.reason === 'choosing a note to swap')).toBe(true);
     const before = JSON.stringify(s.current!.hands);
-    tick(s, now + 15_000);
+    tick(s, now + 600_000);
+    expect(forced.every((f) => f.status === 'picking')).toBe(true); // no auto-pick
+    resolveForced(s, now);
     expect(forced.every((f) => f.status === 'done')).toBe(true);
     expect(JSON.stringify(s.current!.hands)).not.toBe(before);
     // Everyone still holds the same number of notes after a rotation.
@@ -148,8 +245,8 @@ describe('trading', () => {
 
   it('runs a requested swap: accept, both pick blind, notes change hands and stay in "seen"', () => {
     const { s, ids } = setup(6);
-    let now = goTo(s, 'trading');
-    tick(s, (now += 15_000)); // let forced swaps resolve
+    const now = goTo(s, 'trading');
+    resolveForced(s, now);
     const [a, b] = ids;
     must(s, a, { type: 'requestSwap', targetId: b }, now);
     expect(act(s, a, { type: 'requestSwap', targetId: ids[2] }, now).ok).toBe(false); // one pending at a time
@@ -166,29 +263,40 @@ describe('trading', () => {
     expect(s.current!.hands[a].filter((x) => x === na)).toHaveLength(0);
   });
 
-  it('cancels a requested swap when someone backs out, and expires unanswered requests', () => {
+  it('holds the round for unanswered requests; the sender can cancel', () => {
     const { s, ids } = setup(6);
-    let now = goTo(s, 'trading');
-    tick(s, (now += 15_000));
+    const now = goTo(s, 'trading');
+    resolveForced(s, now);
+    must(s, ids[0], { type: 'requestSwap', targetId: ids[1] }, now);
+    const s1 = s.current!.swaps[s.current!.swaps.length - 1];
+    for (const id of ids) must(s, id, { type: 'done' }, now);
+    tick(s, now + 600_000);
+    expect(s.round).toBe('trading');
+    expect(waitingOn(s).map((w) => w.reason).sort()).toEqual(['responding to a request', 'waiting on their own request']);
+    expect(act(s, ids[2], { type: 'cancelRequest', requestId: s1.id }, now).ok).toBe(false); // only the sender
+    must(s, ids[0], { type: 'cancelRequest', requestId: s1.id }, now);
+    expect(s1.status).toBe('cancelled');
+    tick(s, now);
+    expect(s.round).toBe('evidence2');
+  });
+
+  it('cancels a half-picked swap if the host moves on', () => {
+    const { s, ids } = setup(6);
+    const now = goTo(s, 'trading');
+    resolveForced(s, now);
     must(s, ids[0], { type: 'requestSwap', targetId: ids[1] }, now);
     const s1 = s.current!.swaps[s.current!.swaps.length - 1];
     must(s, ids[1], { type: 'respondSwap', swapId: s1.id, accept: true }, now);
     must(s, ids[0], { type: 'pickSwap', swapId: s1.id, noteId: s.current!.hands[ids[0]][0] }, now);
-    const events = tick(s, now + 15_000);
+    const r = hostAdvance(s, s.hostId, now);
     expect(s1.status).toBe('cancelled');
-    expect(events.some((e) => e.type === 'toast' && e.to === ids[0] && e.text.includes('backed out'))).toBe(true);
-
-    now += 16_000;
-    must(s, ids[0], { type: 'requestSwap', targetId: ids[2] }, now);
-    const s2 = s.current!.swaps[s.current!.swaps.length - 1];
-    tick(s, now + 20_000);
-    expect(s2.status).toBe('expired');
+    expect(r.ok && r.events.some((e) => e.type === 'toast' && e.to === ids[0])).toBe(true);
   });
 
   it('limits requests to 2 per round but lets allies swap freely', () => {
     const { s, ids } = setup(6);
-    let now = goTo(s, 'trading');
-    tick(s, (now += 15_000));
+    const now = goTo(s, 'trading');
+    resolveForced(s, now);
     const [a, b, c, d] = ids;
     must(s, a, { type: 'proposeAlliance', targetId: d }, now);
     must(s, d, { type: 'respondAlliance', allianceId: s.current!.alliances[0].id, accept: true }, now);
@@ -202,8 +310,8 @@ describe('trading', () => {
 
   it('gives and shows notes; shows flash and land in "seen" only, with a limit', () => {
     const { s, ids } = setup(6);
-    let now = goTo(s, 'trading');
-    tick(s, (now += 15_000));
+    const now = goTo(s, 'trading');
+    resolveForced(s, now);
     const [a, b, c, d] = ids;
     const note = s.current!.hands[a][0];
     const events = must(s, a, { type: 'show', targetId: b, noteId: note }, now);
@@ -256,7 +364,7 @@ describe('scoring', () => {
     const wrong = dets.find((d) => d !== s.current!.gen.patsyId && d !== dets[0] && d !== dets[1])!;
     must(s, wrong, { type: 'accuse', targetId: s.current!.gen.patsyId, stake: 'sure' }, now);
     expect(act(s, dets[0], { type: 'accuse', targetId: dets[1], stake: 'sure' }, now).ok).toBe(false); // locked
-    tick(s, s.roundEndsAt!);
+    hostAdvance(s, s.hostId, now);
     const r = s.current!.result!;
     expect(r.scores[dets[0]].total).toBe(100);
     expect(r.scores[dets[1]].total).toBe(50);

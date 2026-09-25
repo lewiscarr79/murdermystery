@@ -5,7 +5,6 @@ import type {
   CharacterCard,
   Mark,
   NoteView,
-  Pace,
   QuestionDim,
   Role,
   RoundId,
@@ -25,6 +24,7 @@ export interface PublicPlayer {
 
 export interface CaseResultView {
   caseIndex: number;
+  practice?: boolean;
   killerId: string;
   accompliceIds: string[];
   patsyId: string;
@@ -66,20 +66,22 @@ export interface CaseView {
     kind: 'request' | 'forced';
     members: string[];
     status: string;
-    deadline: number;
     myPick?: string;
     iAmRequester: boolean;
   }[];
-  gives: { id: string; fromId: string; toId: string; status: string; deadline: number; icon?: string; noteId?: string }[];
+  gives: { id: string; fromId: string; toId: string; status: string; icon?: string; noteId?: string }[];
   allies: string[];
-  allianceRequests: { id: string; fromId: string; toId: string; deadline: number }[];
+  allianceRequests: { id: string; fromId: string; toId: string }[];
   alliancesEnabled: boolean;
   statements: Statement[];
   statementOptions: { suspectAllowed: boolean; spots: string[] };
   marks: Record<string, Mark>;
   pins: string[];
   accusation?: { targetId: string; stake: Stake };
-  done: boolean;
+  /** Tapped "I'm finished" this round. */
+  ready: boolean;
+  /** Ready and nothing is waiting on me. */
+  finished: boolean;
   questions: Record<QuestionDim, string>;
   lockedNoteIds: string[];
 }
@@ -92,11 +94,15 @@ export interface PlayerView {
   startsAt?: number;
   serverNow: number;
   players: PublicPlayer[];
-  settings: { cases: number; pace: Pace };
+  settings: { cases: number; practice: boolean };
   caseIndex: number;
+  totalCases: number;
+  /** The current case is the guided practice case. */
+  practice: boolean;
   round?: RoundId;
   roundIndex?: number;
-  roundEndsAt?: number;
+  /** Everyone the round is still waiting on, with a vague public reason. */
+  waitingOn: { playerId: string; reason: string }[];
   case?: CaseView;
   lastResult?: CaseResultView;
   results: CaseResultView[];

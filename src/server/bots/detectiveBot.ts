@@ -116,8 +116,9 @@ export function detectiveStatement(cv: CaseView, d: Deductions, mem: Memory, rng
 }
 
 export function detectiveMarks(cv: CaseView, d: Deductions): Action | null {
-  for (const l of d.liars) if (cv.marks[l] !== 'liar') return { type: 'mark', targetId: l, mark: 'liar' };
-  for (const c of d.cleared) if (cv.marks[c] !== 'cleared') return { type: 'mark', targetId: c, mark: 'cleared' };
+  const me = cv.card.playerId;
+  for (const l of d.liars) if (l !== me && cv.marks[l] !== 'liar') return { type: 'mark', targetId: l, mark: 'liar' };
+  for (const c of d.cleared) if (c !== me && !cv.marks[c]) return { type: 'mark', targetId: c, mark: 'cleared' };
   return null;
 }
 

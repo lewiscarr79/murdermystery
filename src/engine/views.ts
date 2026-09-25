@@ -12,7 +12,7 @@ import {
 } from '../shared/rules.ts';
 import type { Note, NoteView, Role } from '../shared/types.ts';
 import type { CaseView, PlayerView } from '../shared/view.ts';
-import { alliesOf, incomingQuestionsThisRound, type GameState } from './game.ts';
+import { alliesOf, incomingQuestionsThisRound, isFinished, isPracticeCase, totalCases, waitingOn, type GameState } from './game.ts';
 
 export function noteView(n: Note): NoteView {
   return { id: n.id, text: n.text, icon: n.icon, fact: n.fact };
@@ -36,9 +36,11 @@ export function playerView(state: GameState, pid: string, now: number): PlayerVi
     players: state.players.map((p) => ({ id: p.id, name: p.name, isBot: p.isBot, botLevel: p.botLevel, connected: p.connected, score: p.score })),
     settings: { ...state.settings },
     caseIndex: state.caseIndex,
+    totalCases: totalCases(state),
+    practice: state.phase === 'playing' && isPracticeCase(state),
     round: state.round,
     roundIndex: state.round ? ROUND_ORDER.indexOf(state.round) : undefined,
-    roundEndsAt: state.roundEndsAt,
+    waitingOn: waitingOn(state),
     results: state.phase === 'over' ? state.results : [],
   };
   const c = state.current;
@@ -108,7 +110,6 @@ function caseView(state: GameState, pid: string): CaseView {
         kind: s.kind,
         members: s.members,
         status: s.status,
-        deadline: s.deadline,
         myPick: s.picks[pid],
         iAmRequester: s.members[0] === pid,
       })),
@@ -119,21 +120,21 @@ function caseView(state: GameState, pid: string): CaseView {
         fromId: gv.fromId,
         toId: gv.toId,
         status: gv.status,
-        deadline: gv.deadline,
         icon: g.notes[gv.noteId].icon,
         noteId: gv.fromId === pid ? gv.noteId : undefined,
       })),
     allies: alliesOf(state, pid),
     allianceRequests: c.alliances
       .filter((a) => a.status === 'pending' && (a.fromId === pid || a.toId === pid))
-      .map((a) => ({ id: a.id, fromId: a.fromId, toId: a.toId, deadline: a.deadline })),
+      .map((a) => ({ id: a.id, fromId: a.fromId, toId: a.toId })),
     alliancesEnabled: alliancesEnabled(n),
     statements: c.statements,
     statementOptions: { suspectAllowed: suspectStatementAllowed(n), spots: [...state.pack.socialSpots, ...state.pack.solitarySpots] },
     marks: c.marks[pid],
     pins: c.pins[pid],
     accusation: c.accusations[pid] ? { targetId: c.accusations[pid].targetId, stake: c.accusations[pid].stake } : undefined,
-    done: !!c.done[pid],
+    ready: !!c.ready[pid],
+    finished: isFinished(state, pid),
     questions: state.pack.questions,
     lockedNoteIds: [...locked].filter((id) => c.hands[pid].includes(id)),
   };
@@ -147,7 +148,7 @@ export function spectatorView(state: GameState, now: number) {
     phase: state.phase,
     serverNow: now,
     round: state.round,
-    roundEndsAt: state.roundEndsAt,
+    waitingOn: waitingOn(state),
     caseIndex: state.caseIndex,
     settings: state.settings,
     players: state.players,

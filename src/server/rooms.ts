@@ -19,7 +19,7 @@ import {
 import { randomSeed } from '../engine/rng.ts';
 import { playerView, spectatorView } from '../engine/views.ts';
 import { MAX_PLAYERS } from '../shared/rules.ts';
-import type { Action, BotLevel, Pace } from '../shared/types.ts';
+import type { Action, BotLevel } from '../shared/types.ts';
 import { BotRunner } from './bots/botRunner.ts';
 
 const BOT_NAMES = ['Ada', 'Bram', 'Cleo', 'Dex', 'Esme', 'Finn', 'Gus', 'Hana', 'Ivo', 'Juno', 'Kit', 'Lia', 'Milo', 'Nell', 'Otto', 'Pip', 'Quin', 'Rae', 'Sol', 'Tess', 'Uma', 'Vik'];
@@ -195,14 +195,14 @@ export function registerSocketHandlers(io: Server) {
     });
 
     /** Dev/test: an all-bot game to watch in the spectator view. */
-    socket.on('botGame', (msg: { players?: number; level?: string; cases?: number; pace?: Pace }, ack?: Ack) => {
+    socket.on('botGame', (msg: { players?: number; level?: string; cases?: number }, ack?: Ack) => {
       const n = Math.max(4, Math.min(MAX_PLAYERS, Number(msg?.players) || 6));
       const code = newCode();
       const room = new Room(code, { id: newId('b'), name: `${BOT_NAMES[0]} (bot)`, isBot: true });
       room.state.players[0].botLevel = level(msg?.level);
       rooms.set(code, room);
       addBots(room, n - 1, level(msg?.level));
-      updateSettings(room.state, { cases: Number(msg?.cases) || 3, pace: msg?.pace === 'quick' ? 'quick' : 'standard' });
+      updateSettings(room.state, { cases: Number(msg?.cases) || 3, practice: false });
       room.spectators.add(socket);
       socket.data.spectating = code;
       startGame(room.state, room.now());
@@ -217,7 +217,7 @@ export function registerSocketHandlers(io: Server) {
       room.broadcast();
     });
 
-    socket.on('lobby', (msg: { type?: string; level?: string; count?: number; id?: string; cases?: number; pace?: Pace }, ack?: Ack) => {
+    socket.on('lobby', (msg: { type?: string; level?: string; count?: number; id?: string; cases?: number; practice?: boolean }, ack?: Ack) => {
       const room = rooms.get(socket.data.code);
       const pid = socket.data.playerId as string | undefined;
       if (!room || !pid) return ack?.({ ok: false, error: 'Not in a game' });
@@ -225,7 +225,7 @@ export function registerSocketHandlers(io: Server) {
       let r: { ok: boolean; error?: string } = { ok: true };
       if (msg?.type === 'addBot') addBots(room, Math.max(1, Math.min(21, Number(msg.count) || 1)), level(msg.level));
       else if (msg?.type === 'remove' && msg.id && msg.id !== pid) r = removePlayer(room.state, msg.id);
-      else if (msg?.type === 'settings') r = updateSettings(room.state, { cases: msg.cases, pace: msg.pace });
+      else if (msg?.type === 'settings') r = updateSettings(room.state, { cases: msg.cases, practice: msg.practice });
       else if (msg?.type === 'start') r = startGame(room.state, room.now());
       else if (msg?.type === 'advance') r = hostAdvance(room.state, pid, room.now());
       ack?.(r);

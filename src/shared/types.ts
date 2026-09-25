@@ -61,6 +61,7 @@ export interface Statement {
 
 export type Action =
   | { type: 'done' }
+  | { type: 'cancelRequest'; requestId: string }
   | { type: 'ask'; targetId: string; dim: QuestionDim }
   | { type: 'answer'; questionId: string; mode: AnswerMode; lieValue?: string }
   | { type: 'requestSwap'; targetId: string }

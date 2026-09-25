@@ -6,18 +6,16 @@ import {
   MAX_PLAYERS,
   MIN_PLAYERS,
   LIES_PER_CASE,
-  PICK_TIMEOUT_MS,
-  REQUEST_TIMEOUT_MS,
   REQUESTS_PER_TRADING_ROUND,
   ROUND_ACTIONS,
   ROUND_ORDER,
   SHOWS_PER_TRADING_ROUND,
   START_COUNTDOWN_MS,
   alliancesEnabled,
+  isQuestionRound,
   isTradingRound,
   maxAllies,
   questionsPerRound,
-  roundDurationMs,
   statementsPerRound,
   suspectStatementAllowed,
 } from '../shared/rules.ts';
@@ -26,7 +24,6 @@ import type {
   AnswerMode,
   BotLevel,
   Mark,
-  Pace,
   QuestionDim,
   RoundId,
   Stake,
@@ -66,7 +63,6 @@ export interface SwapState {
   members: string[];
   status: RequestStatus;
   picks: Record<string, string>;
-  deadline: number;
   round: RoundId;
   allyFree: boolean;
 }
@@ -77,7 +73,6 @@ export interface GiveState {
   toId: string;
   noteId: string;
   status: RequestStatus;
-  deadline: number;
 }
 
 export interface AllianceState {
@@ -85,7 +80,6 @@ export interface AllianceState {
   fromId: string;
   toId: string;
   status: RequestStatus;
-  deadline: number;
 }
 
 export interface Counters {
@@ -109,7 +103,8 @@ export interface CaseState {
   pins: Record<string, string[]>;
   liesLeft: Record<string, number>;
   counters: Record<string, Counters>;
-  done: Record<string, boolean>;
+  /** "I'm finished" taps this round. A player is finished once ready and nothing is waiting on them. */
+  ready: Record<string, boolean>;
   accusations: Record<string, { targetId: string; stake: Stake; at: number }>;
   /** Holders of each note in order, for the reveal's forgery trails. */
   trails: Record<string, string[]>;
@@ -119,7 +114,8 @@ export interface CaseState {
 
 export interface Settings {
   cases: number;
-  pace: Pace;
+  /** Play an extra, guided practice case first whose points don't count. */
+  practice: boolean;
 }
 
 export interface GameState {
@@ -133,7 +129,6 @@ export interface GameState {
   caseIndex: number;
   round?: RoundId;
   roundStartedAt?: number;
-  roundEndsAt?: number;
   current?: CaseState;
   roleHistory: RoleHistory;
   recentPatsies: string[];
@@ -159,7 +154,7 @@ export function createGame(code: string, host: { id: string; name: string }, see
     hostId: host.id,
     pack: launchNight,
     players: [{ id: host.id, name: host.name, isBot: false, connected: true, score: 0 }],
-    settings: { cases: 3, pace: 'standard' },
+    settings: { cases: 3, practice: true },
     phase: 'lobby',
     caseIndex: 0,
     roleHistory: {},
@@ -199,7 +194,7 @@ export function removePlayer(state: GameState, id: string): ActResult {
 export function updateSettings(state: GameState, settings: Partial<Settings>): ActResult {
   if (state.phase !== 'lobby') return fail('Settings are locked once the game starts');
   if (settings.cases !== undefined) state.settings.cases = Math.max(1, Math.min(5, Math.round(settings.cases)));
-  if (settings.pace) state.settings.pace = settings.pace;
+  if (settings.practice !== undefined) state.settings.practice = !!settings.practice;
   return ok();
 }
 
@@ -212,16 +207,18 @@ export function startGame(state: GameState, now: number): ActResult {
   return ok();
 }
 
-/** Earliest time at which tick() has work to do. */
+/** Earliest time at which tick() has timed work to do. Only the synced start is timed; rounds end on completion. */
 export function nextDeadline(state: GameState): number | null {
   if (state.phase === 'starting') return state.startsAt ?? null;
-  if (state.phase !== 'playing' || !state.current) return null;
-  const times = [state.roundEndsAt ?? Infinity];
-  for (const s of state.current.swaps) if (s.status === 'pending' || s.status === 'picking') times.push(s.deadline);
-  for (const g of state.current.gives) if (g.status === 'pending') times.push(g.deadline);
-  for (const a of state.current.alliances) if (a.status === 'pending') times.push(a.deadline);
-  const t = Math.min(...times);
-  return Number.isFinite(t) ? t : null;
+  return null;
+}
+
+export function totalCases(state: GameState): number {
+  return state.settings.cases + (state.settings.practice ? 1 : 0);
+}
+
+export function isPracticeCase(state: GameState, caseIndex = state.caseIndex): boolean {
+  return state.settings.practice && caseIndex === 0;
 }
 
 export function tick(state: GameState, now: number): GameEvent[] {
@@ -230,21 +227,75 @@ export function tick(state: GameState, now: number): GameEvent[] {
     state.phase = 'playing';
     beginCase(state, state.startsAt, events);
   }
-  if (state.phase !== 'playing' || !state.current) return events;
-  expireRequests(state, now, events);
-  if (state.roundEndsAt !== undefined && now >= state.roundEndsAt) advanceRound(state, state.roundEndsAt, events);
-  else if (allDone(state)) advanceRound(state, now, events);
+  if (state.phase === 'playing' && state.current && everyoneFinished(state)) advanceRound(state, now, events);
   return events;
 }
 
-function participants(state: GameState): PlayerInfo[] {
+/** Players whose progress we wait for: every bot and every connected human. */
+export function activePlayers(state: GameState): PlayerInfo[] {
   return state.players.filter((p) => p.isBot || p.connected);
 }
 
-function allDone(state: GameState): boolean {
-  const c = state.current!;
-  const active = participants(state);
-  return active.length > 0 && active.every((p) => c.done[p.id]);
+export type WaitReason =
+  | 'answering a question'
+  | 'choosing a note to swap'
+  | 'responding to a request'
+  | 'waiting on their own request'
+  | 'reading'
+  | 'still investigating'
+  | "hasn't accused yet"
+  | 'looking at the results';
+
+/** Things this player must do before the round can end (in priority order). */
+export function obligations(state: GameState, pid: string): WaitReason[] {
+  const c = state.current;
+  const round = state.round;
+  if (!c || !round) return [];
+  const out: WaitReason[] = [];
+  if (isQuestionRound(round) && c.questions.some((q) => q.round === round && q.targetId === pid && !q.answer)) out.push('answering a question');
+  if (isTradingRound(round)) {
+    if (c.swaps.some((s) => s.status === 'picking' && s.members.includes(pid) && !s.picks[pid])) out.push('choosing a note to swap');
+    const incoming =
+      c.swaps.some((s) => s.kind === 'request' && s.status === 'pending' && s.members[1] === pid) ||
+      c.gives.some((g) => g.status === 'pending' && g.toId === pid) ||
+      c.alliances.some((a) => a.status === 'pending' && a.toId === pid);
+    if (incoming) out.push('responding to a request');
+    // Only requests to someone still here hold you up.
+    const active = new Set(activePlayers(state).map((p) => p.id));
+    const outgoing =
+      c.swaps.some((s) => s.kind === 'request' && s.status === 'pending' && s.members[0] === pid && active.has(s.members[1])) ||
+      c.gives.some((g) => g.status === 'pending' && g.fromId === pid && active.has(g.toId)) ||
+      c.alliances.some((a) => a.status === 'pending' && a.fromId === pid && active.has(a.toId));
+    if (outgoing) out.push('waiting on their own request');
+  }
+  return out;
+}
+
+export function isFinished(state: GameState, pid: string): boolean {
+  const c = state.current;
+  if (!c || !state.round) return false;
+  if (state.round === 'accusation') return !!c.accusations[pid];
+  return !!c.ready[pid] && obligations(state, pid).length === 0;
+}
+
+/** Who the round is waiting on, with a vague public reason (never any content or other names). */
+export function waitingOn(state: GameState): { playerId: string; reason: WaitReason }[] {
+  if (state.phase !== 'playing' || !state.current || !state.round) return [];
+  const round = state.round;
+  return activePlayers(state)
+    .filter((p) => !isFinished(state, p.id))
+    .map((p) => {
+      const ob = obligations(state, p.id);
+      if (ob.length) return { playerId: p.id, reason: ob[0] };
+      const reason: WaitReason =
+        round === 'accusation' ? "hasn't accused yet" : round === 'reveal' ? 'looking at the results' : round === 'briefing' || round === 'evidence' ? 'reading' : 'still investigating';
+      return { playerId: p.id, reason };
+    });
+}
+
+function everyoneFinished(state: GameState): boolean {
+  const active = activePlayers(state);
+  return active.length > 0 && active.every((p) => isFinished(state, p.id));
 }
 
 function nid(state: GameState, prefix: string): string {
@@ -288,7 +339,7 @@ function beginCase(state: GameState, now: number, events: GameEvent[]) {
     pins: perPlayer(() => [] as string[]),
     liesLeft: perPlayer(() => LIES_PER_CASE),
     counters: perPlayer(freshCounters),
-    done: {},
+    ready: {},
     accusations: {},
     trails: {},
     log: [],
@@ -305,8 +356,7 @@ function enterRound(state: GameState, round: RoundId, now: number, events: GameE
   const c = state.current!;
   state.round = round;
   state.roundStartedAt = now;
-  state.roundEndsAt = now + roundDurationMs(round, state.settings.pace, state.players.length);
-  c.done = {};
+  c.ready = {};
   for (const id of Object.keys(c.counters)) c.counters[id] = freshCounters();
   events.push({ type: 'round', round });
   log(state, now, `— ${round} —`);
@@ -321,15 +371,16 @@ function enterRound(state: GameState, round: RoundId, now: number, events: GameE
     }
     c.announcements.push(round === 'evidence' ? c.gen.announcements.evidence : c.gen.announcements.evidence2);
   }
-  if (isTradingRound(round)) createForcedSwaps(state, now);
+  if (isTradingRound(round)) createForcedSwaps(state);
   if (round === 'reveal') {
     c.result = scoreCase(state);
-    for (const p of state.players) p.score += c.result.scores[p.id]?.total ?? 0;
+    c.result.practice = isPracticeCase(state);
+    if (!c.result.practice) for (const p of state.players) p.score += c.result.scores[p.id]?.total ?? 0;
     state.results.push(c.result);
   }
 }
 
-function createForcedSwaps(state: GameState, now: number) {
+function createForcedSwaps(state: GameState) {
   const c = state.current!;
   const rng = createRng(state.seed + state.caseIndex * 31 + ROUND_ORDER.indexOf(state.round!) * 977);
   const ids = rng.shuffle(state.players.map((p) => p.id).filter((id) => c.hands[id].length > 0));
@@ -345,7 +396,6 @@ function createForcedSwaps(state: GameState, now: number) {
       members,
       status: 'picking',
       picks: {},
-      deadline: now + PICK_TIMEOUT_MS,
       round: state.round!,
       allyFree: true,
     });
@@ -361,7 +411,10 @@ function advanceRound(state: GameState, now: number, events: GameEvent[]) {
   }
   for (const s of c.swaps) {
     if (s.status === 'pending') s.status = 'expired';
-    if (s.status === 'picking') resolveOrLapseSwap(state, s, now, events, true);
+    if (s.status === 'picking') {
+      s.status = 'cancelled';
+      for (const m of s.members) if (s.picks[m]) events.push({ type: 'toast', to: m, text: 'Swap cancelled — the round moved on.' });
+    }
   }
   for (const g of c.gives) if (g.status === 'pending') g.status = 'expired';
   for (const a of c.alliances) if (a.status === 'pending') a.status = 'expired';
@@ -373,60 +426,12 @@ function advanceRound(state: GameState, now: number, events: GameEvent[]) {
   }
   // End of reveal.
   state.caseIndex += 1;
-  if (state.caseIndex >= state.settings.cases) {
+  if (state.caseIndex >= totalCases(state)) {
     state.phase = 'over';
     state.round = undefined;
-    state.roundEndsAt = undefined;
     events.push({ type: 'gameOver' });
   } else {
     beginCase(state, now, events);
-  }
-}
-
-function expireRequests(state: GameState, now: number, events: GameEvent[]) {
-  const c = state.current!;
-  for (const s of c.swaps) {
-    if (s.status === 'pending' && now >= s.deadline) {
-      s.status = 'expired';
-      events.push({ type: 'toast', to: s.members[0], text: `${name(state, s.members[1])} didn't respond to your swap.` });
-    } else if (s.status === 'picking' && now >= s.deadline) {
-      resolveOrLapseSwap(state, s, now, events, false);
-    }
-  }
-  for (const g of c.gives) {
-    if (g.status === 'pending' && now >= g.deadline) g.status = 'expired';
-  }
-  for (const a of c.alliances) {
-    if (a.status === 'pending' && now >= a.deadline) a.status = 'expired';
-  }
-}
-
-/** Picking deadline passed: forced swaps auto-pick a random note; requested swaps are cancelled. */
-function resolveOrLapseSwap(state: GameState, s: SwapState, now: number, events: GameEvent[], roundEnding: boolean) {
-  const c = state.current!;
-  if (s.kind === 'forced') {
-    const rng = createRng(state.seed + state.seq * 13 + now);
-    for (const m of s.members) {
-      if (!s.picks[m]) {
-        const free = c.hands[m].filter((n) => !lockedNotes(state).has(n));
-        if (free.length) s.picks[m] = rng.pick(free);
-      }
-    }
-    if (s.members.every((m) => s.picks[m])) {
-      completeSwap(state, s, now, events);
-      return;
-    }
-  }
-  s.status = 'cancelled';
-  const missing = s.members.filter((m) => !s.picks[m]);
-  for (const m of s.members) {
-    if (!missing.includes(m)) {
-      events.push({
-        type: 'toast',
-        to: m,
-        text: roundEnding ? 'Swap cancelled: time ran out.' : `Swap cancelled: ${missing.map((x) => name(state, x)).join(', ')} backed out.`,
-      });
-    }
   }
 }
 
@@ -483,7 +488,6 @@ export function incomingQuestionsThisRound(state: GameState, pid: string): numbe
 export function act(state: GameState, pid: string, action: Action, now: number): ActResult {
   if (state.phase !== 'playing' || !state.current || !state.round) return fail('No round in progress');
   if (!state.players.some((p) => p.id === pid)) return fail('Unknown player');
-  if (state.roundEndsAt !== undefined && now > state.roundEndsAt) return fail('Too late — the round has ended');
   if (!ROUND_ACTIONS[state.round].includes(action.type)) return fail(`You can't do that in this round`);
   const c = state.current;
   const n = state.players.length;
@@ -492,8 +496,19 @@ export function act(state: GameState, pid: string, action: Action, now: number):
 
   switch (action.type) {
     case 'done':
-      c.done[pid] = true;
+      c.ready[pid] = true;
       return ok();
+
+    case 'cancelRequest': {
+      const s = c.swaps.find((x) => x.id === action.requestId && x.kind === 'request' && x.members[0] === pid && x.status === 'pending');
+      const g = c.gives.find((x) => x.id === action.requestId && x.fromId === pid && x.status === 'pending');
+      const a = c.alliances.find((x) => x.id === action.requestId && x.fromId === pid && x.status === 'pending');
+      const target = s ?? g ?? a;
+      if (!target) return fail('Nothing to cancel');
+      target.status = 'cancelled';
+      const to = s ? s.members[1] : g ? g.toId : a!.toId;
+      return ok([{ type: 'toast', to, text: `${name(state, pid)} withdrew their request.` }]);
+    }
 
     case 'mark':
       if (!isPlayer(action.targetId)) return fail('Pick another player');
@@ -558,7 +573,6 @@ export function act(state: GameState, pid: string, action: Action, now: number):
         members: [pid, action.targetId],
         status: 'pending',
         picks: {},
-        deadline: now + REQUEST_TIMEOUT_MS,
         round: state.round,
         allyFree,
       });
@@ -573,7 +587,6 @@ export function act(state: GameState, pid: string, action: Action, now: number):
         return ok([{ type: 'toast', to: s.members[0], text: `${name(state, pid)} declined your swap.` }]);
       }
       s.status = 'picking';
-      s.deadline = now + PICK_TIMEOUT_MS;
       return ok([{ type: 'toast', to: s.members[0], text: `${name(state, pid)} accepted — pick a note to give.` }]);
     }
 
@@ -599,7 +612,7 @@ export function act(state: GameState, pid: string, action: Action, now: number):
       if (!c.hands[pid].includes(action.noteId)) return fail("That note isn't in your hand");
       if (lockedNotes(state).has(action.noteId)) return fail('That note is already committed elsewhere');
       counters.requests += 1;
-      c.gives.push({ id: nid(state, 'g'), fromId: pid, toId: action.targetId, noteId: action.noteId, status: 'pending', deadline: now + REQUEST_TIMEOUT_MS });
+      c.gives.push({ id: nid(state, 'g'), fromId: pid, toId: action.targetId, noteId: action.noteId, status: 'pending' });
       return ok([{ type: 'toast', to: action.targetId, text: `${name(state, pid)} wants to give you a note.` }]);
     }
 
@@ -644,7 +657,7 @@ export function act(state: GameState, pid: string, action: Action, now: number):
           ((a.fromId === pid && a.toId === action.targetId) || (a.fromId === action.targetId && a.toId === pid)),
       );
       if (existing) return fail('Already allied or pending');
-      c.alliances.push({ id: nid(state, 'a'), fromId: pid, toId: action.targetId, status: 'pending', deadline: now + REQUEST_TIMEOUT_MS });
+      c.alliances.push({ id: nid(state, 'a'), fromId: pid, toId: action.targetId, status: 'pending' });
       return ok([{ type: 'toast', to: action.targetId, text: `${name(state, pid)} proposes a secret alliance.` }]);
     }
 
@@ -682,7 +695,7 @@ export function act(state: GameState, pid: string, action: Action, now: number):
       if (!isPlayer(action.targetId)) return fail('Pick another player');
       if (c.accusations[pid]) return fail('Your accusation is locked in');
       c.accusations[pid] = { targetId: action.targetId, stake: action.stake, at: now };
-      c.done[pid] = true;
+      c.ready[pid] = true;
       return ok();
     }
   }

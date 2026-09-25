@@ -10,6 +10,8 @@ export interface ScoreLine {
 
 export interface CaseResult {
   caseIndex: number;
+  /** Practice case: shown on the reveal but not added to the leaderboard. */
+  practice?: boolean;
   killerId: string;
   accompliceIds: string[];
   patsyId: string;

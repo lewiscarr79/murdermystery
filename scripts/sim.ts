@@ -16,6 +16,7 @@ export function simulateGame(n: number, seed: number, level: BotLevel, cases: nu
   state.players[0].botLevel = level;
   for (let i = 1; i < n; i++) addPlayer(state, { id: `b${i}`, name: `Bot ${i}`, isBot: true, botLevel: level });
   state.settings.cases = cases;
+  state.settings.practice = false;
   const runner = new BotRunner(seed);
   let now = 0;
   startGame(state, now);

@@ -1,5 +1,5 @@
 // Size-scaled rule constants. Every number the rulebook mentions lives here.
-import type { ActionType, Pace, RoundId } from './types.ts';
+import type { ActionType, RoundId } from './types.ts';
 
 export const MIN_PLAYERS = 4;
 export const MAX_PLAYERS = 22;
@@ -16,47 +16,15 @@ export const ROUND_ORDER: RoundId[] = [
 ];
 
 export const ROUND_LABELS: Record<RoundId, { title: string; hint: string }> = {
-  briefing: { title: 'Briefing', hint: 'Read your character card and your role.' },
-  evidence: { title: 'Evidence', hint: 'Your first evidence notes have arrived. Study them.' },
-  questioning: { title: 'Questioning', hint: 'Question other players. Answer truthfully… or not.' },
-  trading: { title: 'Trading', hint: 'Swap, give or show notes. Careful: the killer is trading too.' },
-  evidence2: { title: 'New Evidence', hint: 'Fresh evidence is in. Ask your remaining questions.' },
-  finalTrades: { title: 'Final Trades', hint: 'Last chance to trade before accusations.' },
-  accusation: { title: 'Accusation', hint: 'Name the killer. Sure or Hunch?' },
+  briefing: { title: 'Briefing', hint: 'Meet your character and find out your role.' },
+  evidence: { title: 'Evidence', hint: 'Your first clues have arrived. They describe the killer.' },
+  questioning: { title: 'Questioning', hint: 'Ask other players about themselves to see who matches the clues.' },
+  trading: { title: 'Trading', hint: 'Swap notes to get more clues. Careful: the killer is trading too.' },
+  evidence2: { title: 'New Evidence', hint: 'More clues are in. Ask your last questions.' },
+  finalTrades: { title: 'Final Trades', hint: 'Last chance to swap notes before you accuse.' },
+  accusation: { title: 'Accusation', hint: 'Name the killer: Sure or Hunch?' },
   reveal: { title: 'Reveal', hint: 'Who did it?' },
 };
-
-const DURATIONS: Record<Pace, Record<RoundId, number>> = {
-  standard: {
-    briefing: 30,
-    evidence: 60,
-    questioning: 90,
-    trading: 90,
-    evidence2: 90,
-    finalTrades: 60,
-    accusation: 45,
-    reveal: 60,
-  },
-  quick: {
-    briefing: 20,
-    evidence: 45,
-    questioning: 60,
-    trading: 60,
-    evidence2: 60,
-    finalTrades: 45,
-    accusation: 30,
-    reveal: 45,
-  },
-};
-
-const BIG_GAME_BONUS_ROUNDS: RoundId[] = ['questioning', 'trading', 'evidence2', 'finalTrades'];
-
-/** Round duration in milliseconds. */
-export function roundDurationMs(round: RoundId, pace: Pace, players: number): number {
-  const base = DURATIONS[pace][round];
-  const bonus = players >= 13 && BIG_GAME_BONUS_ROUNDS.includes(round) ? 15 : 0;
-  return (base + bonus) * 1000;
-}
 
 const ALWAYS: ActionType[] = ['mark', 'pin', 'done'];
 const QUESTIONING: ActionType[] = [...ALWAYS, 'ask', 'answer', 'statement'];
@@ -70,6 +38,7 @@ const TRADING: ActionType[] = [
   'show',
   'proposeAlliance',
   'respondAlliance',
+  'cancelRequest',
   'statement',
 ];
 
@@ -117,8 +86,6 @@ export function genuineCopies(n: number): number {
 
 export const LIES_PER_CASE = 3;
 export const MAX_INCOMING_QUESTIONS = 3;
-export const REQUEST_TIMEOUT_MS = 20_000;
-export const PICK_TIMEOUT_MS = 15_000;
 export const SHOW_FLASH_MS = 5_000;
 export const START_COUNTDOWN_MS = 3_000;
 

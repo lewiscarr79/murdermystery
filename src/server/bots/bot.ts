@@ -43,7 +43,8 @@ export class Bot {
     }
     observeNotes(this.mem, cv, round, this.id);
     const action = this.decide(view, round);
-    if (action) {
+    // Private marks aren't progress: they must not keep a bot from finishing the round.
+    if (action && action.type !== 'mark') {
       this.mem.actionsThisRound++;
       this.mem.idleThinks = 0;
     } else {
@@ -57,7 +58,7 @@ export class Bot {
     const rng = this.rng;
     const killerSide = cv.role !== 'detective';
     const d = deduce(cv, this.mem, this.id);
-    const doneAfter = (idle: number): Action | null => (!cv.done && this.mem.idleThinks >= idle ? { type: 'done' } : null);
+    const doneAfter = (idle: number): Action | null => (!cv.ready && this.mem.idleThinks >= idle ? { type: 'done' } : null);
 
     if (round === 'briefing' || round === 'reveal' || round === 'evidence') return doneAfter(round === 'evidence' ? 2 : 1);
 
@@ -75,15 +76,22 @@ export class Bot {
       }
       const st = killerSide ? killerStatement(cv, this.mem, rng) : detectiveStatement(cv, d, this.mem, rng);
       if (st) return st;
-      return cv.left.questions <= 0 ? doneAfter(3) : null;
+      return doneAfter(cv.left.questions <= 0 ? 2 : 5);
     }
 
     if (isTradingRound(round)) {
       const t = killerSide ? killerTrade(cv, this.mem, rng, this.id) : detectiveTrade(view, cv, d, this.mem, rng, this.id);
       if (t) return t;
+      // No timers any more: don't hold the table up waiting on a slow reply.
+      const mine = cv.swaps.find((s) => s.iAmRequester && s.status === 'pending') ?? cv.gives.find((g) => g.fromId === this.id);
+      const myAlliance = cv.allianceRequests.find((a) => a.fromId === this.id);
+      if ((mine || myAlliance) && this.mem.idleThinks >= 4) return { type: 'cancelRequest', requestId: (mine ?? myAlliance)!.id };
       const st = killerSide ? killerStatement(cv, this.mem, rng) : detectiveStatement(cv, d, this.mem, rng);
       if (st) return st;
-      const pendingForMe = cv.swaps.length > 0 || cv.gives.some((g) => g.toId === this.id) || cv.allianceRequests.some((a) => a.toId === this.id);
+      const pendingForMe =
+        cv.swaps.some((s) => (s.status === 'picking' && !s.myPick) || (s.status === 'pending' && !s.iAmRequester)) ||
+        cv.gives.some((g) => g.toId === this.id) ||
+        cv.allianceRequests.some((a) => a.toId === this.id);
       return pendingForMe ? null : doneAfter(6);
     }
 

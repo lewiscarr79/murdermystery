@@ -82,8 +82,6 @@ describe('real-time sync', () => {
     const arrivals = clients.map((c) => c.briefingAt!);
     expect(arrivals.every(Boolean)).toBe(true);
     expect(Math.max(...arrivals) - Math.min(...arrivals)).toBeLessThan(250);
-    const ends = clients.map((c) => msRemaining(c.view!.roundEndsAt!, c.clock(), c.offset));
-    expect(Math.max(...ends) - Math.min(...ends)).toBeLessThan(100);
 
     clients.forEach((c) => c.socket.close());
   }, 20_000);
