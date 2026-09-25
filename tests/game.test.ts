@@ -261,7 +261,7 @@ describe('scoring', () => {
     expect(r.scores[dets[0]].total).toBe(100);
     expect(r.scores[dets[1]].total).toBe(50);
     expect(r.scores[wrong].total).toBe(-30);
-    expect(r.scores[killer].total).toBeLessThanOrEqual(150);
+    expect(r.scores[killer].total).toBeLessThanOrEqual(120);
     expect(r.scores[killer].total).toBeGreaterThan(0);
     expect(r.correctIds.sort()).toEqual([dets[0], dets[1]].sort());
   });

@@ -159,12 +159,15 @@ export const SCORING = {
   accusedAccomplice: 25,
   lieExposed: 15,
   allianceBothCorrect: 20,
-  killerBase: 150,
-  killerPerPatsyAccuser: 20,
-  killerPerUnexposedLie: 10,
-  killerPerForgeryHeld: 20,
-  killerSideAllyWrong: 30,
-  killerCap: 150,
+  // Killer-side values were tuned down after bot simulations showed the killer topping almost every
+  // case at the original values (150 base, +20/+10/+20/+30, cap 150), which made the leaderboard
+  // depend on who drew the killer role.
+  killerBase: 100,
+  killerPerPatsyAccuser: 10,
+  killerPerUnexposedLie: 5,
+  killerPerForgeryHeld: 5,
+  killerSideAllyWrong: 15,
+  killerCap: 120,
   accompliceShare: 0.7,
   accompliceAccused: -25,
 };
