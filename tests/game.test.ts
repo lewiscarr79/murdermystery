@@ -1,0 +1,315 @@
+import { describe, expect, it } from 'vitest';
+import { act, addPlayer, createGame, nextDeadline, startGame, tick, type GameState } from '../src/engine/game.ts';
+import { playerView } from '../src/engine/views.ts';
+import { ROUND_ORDER, roundDurationMs } from '../src/shared/rules.ts';
+import type { Action, RoundId } from '../src/shared/types.ts';
+
+function setup(n: number, seed = 1): { s: GameState; ids: string[]; now: number } {
+  const s = createGame('ABCD', { id: 'p0', name: 'P0' }, seed);
+  for (let i = 1; i < n; i++) addPlayer(s, { id: `p${i}`, name: `P${i}` });
+  s.settings.cases = 2;
+  startGame(s, 0);
+  tick(s, 3000);
+  return { s, ids: s.players.map((p) => p.id), now: 3000 };
+}
+
+function goTo(s: GameState, round: RoundId): number {
+  while (s.round !== round) tick(s, s.roundEndsAt!);
+  return s.roundStartedAt!;
+}
+
+function must(s: GameState, pid: string, a: Action, now: number) {
+  const r = act(s, pid, a, now);
+  if (!r.ok) throw new Error(r.error);
+  return r.events;
+}
+
+const killerSide = (s: GameState) => [s.current!.gen.killerId, ...s.current!.gen.accompliceIds];
+const detectives = (s: GameState) => s.players.map((p) => p.id).filter((id) => !killerSide(s).includes(id));
+
+describe('game flow', () => {
+  it('counts down, then runs every round in order on deadlines', () => {
+    const s = createGame('ABCD', { id: 'p0', name: 'P0' }, 3);
+    for (let i = 1; i < 6; i++) addPlayer(s, { id: `p${i}`, name: `P${i}` });
+    expect(startGame(s, 1000).ok).toBe(true);
+    expect(s.phase).toBe('starting');
+    expect(nextDeadline(s)).toBe(4000);
+    tick(s, 3999);
+    expect(s.phase).toBe('starting');
+    tick(s, 4000);
+    expect(s.round).toBe('briefing');
+    expect(s.roundEndsAt).toBe(4000 + roundDurationMs('briefing', 'standard', 6));
+    const seen: RoundId[] = [s.round!];
+    while (s.caseIndex === 0 && s.phase === 'playing') {
+      tick(s, s.roundEndsAt!);
+      if (s.caseIndex === 0) seen.push(s.round!);
+    }
+    expect(seen).toEqual(ROUND_ORDER);
+  });
+
+  it('refuses to start below 4 players', () => {
+    const s = createGame('ABCD', { id: 'p0', name: 'P0' }, 3);
+    addPlayer(s, { id: 'p1', name: 'x' });
+    expect(startGame(s, 0).ok).toBe(false);
+  });
+
+  it('deals notes and announcements in the evidence rounds', () => {
+    const { s, ids } = setup(6);
+    goTo(s, 'evidence');
+    for (const id of ids) expect(s.current!.hands[id]).toHaveLength(2);
+    expect(s.current!.announcements).toHaveLength(1);
+    goTo(s, 'evidence2');
+    expect(s.current!.announcements).toHaveLength(2);
+  });
+
+  it('rejects actions outside their round and after the deadline', () => {
+    const { s, ids } = setup(6);
+    const now = goTo(s, 'evidence');
+    expect(act(s, ids[0], { type: 'ask', targetId: ids[1], dim: 'coat' }, now).ok).toBe(false);
+    goTo(s, 'questioning');
+    expect(act(s, ids[0], { type: 'ask', targetId: ids[1], dim: 'coat' }, s.roundEndsAt! + 1).ok).toBe(false);
+  });
+
+  it('ends a round early once everyone taps Done', () => {
+    const { s, ids } = setup(5);
+    const now = goTo(s, 'evidence');
+    for (const id of ids) must(s, id, { type: 'done' }, now + 10);
+    tick(s, now + 10);
+    expect(s.round).toBe('questioning');
+  });
+
+  it('finishes after the configured number of cases', () => {
+    const { s } = setup(4);
+    while (s.phase === 'playing') tick(s, s.roundEndsAt!);
+    expect(s.phase).toBe('over');
+    expect(s.results).toHaveLength(2);
+  });
+});
+
+describe('questioning', () => {
+  it('enforces limits, busy targets, no repeats and the lie budget', () => {
+    const { s, ids } = setup(6);
+    const now = goTo(s, 'questioning');
+    must(s, ids[0], { type: 'ask', targetId: ids[1], dim: 'coat' }, now);
+    expect(act(s, ids[0], { type: 'ask', targetId: ids[1], dim: 'coat' }, now).ok).toBe(false);
+    must(s, ids[0], { type: 'ask', targetId: ids[1], dim: 'drink' }, now);
+    expect(act(s, ids[0], { type: 'ask', targetId: ids[2], dim: 'coat' }, now).ok).toBe(false); // 2 per round at 6
+    must(s, ids[2], { type: 'ask', targetId: ids[1], dim: 'phone' }, now);
+    expect(act(s, ids[3], { type: 'ask', targetId: ids[1], dim: 'team' }, now).ok).toBe(false); // busy
+    expect(playerView(s, ids[3], now).case!.busy).toContain(ids[1]);
+
+    const qs = s.current!.questions.filter((q) => q.targetId === ids[1]);
+    const opts = s.current!.gen.lieOptions[ids[1]];
+    expect(act(s, ids[1], { type: 'answer', questionId: qs[0].id, mode: 'lie', lieValue: 'nonsense' }, now).ok).toBe(false);
+    must(s, ids[1], { type: 'answer', questionId: qs[0].id, mode: 'lie', lieValue: opts.coat[0] }, now);
+    must(s, ids[1], { type: 'answer', questionId: qs[1].id, mode: 'truth' }, now);
+    expect(s.current!.liesLeft[ids[1]]).toBe(2);
+    expect(qs[1].answer!.value).toBe(s.current!.gen.cards[ids[1]].traits.drink);
+
+    // The asker never learns an answer was a lie.
+    const askerView = playerView(s, ids[0], now).case!;
+    expect(askerView.asked.every((a) => a.answer?.mode !== 'lie')).toBe(true);
+
+    // Unanswered questions become "No comment" when the round ends.
+    tick(s, s.roundEndsAt!);
+    expect(qs[2].answer!.mode).toBe('nocomment');
+  });
+
+  it('greys out lying once 3 lies are spent', () => {
+    const { s, ids } = setup(10);
+    let now = goTo(s, 'questioning');
+    const target = ids[9];
+    const lie = (dim: 'coat' | 'drink' | 'phone' | 'team' | 'arrival', asker: string) => {
+      must(s, asker, { type: 'ask', targetId: target, dim }, now);
+      const q = s.current!.questions[s.current!.questions.length - 1];
+      return act(s, target, { type: 'answer', questionId: q.id, mode: 'lie', lieValue: s.current!.gen.lieOptions[target][dim][0] }, now);
+    };
+    expect(lie('coat', ids[0]).ok).toBe(true);
+    expect(lie('drink', ids[1]).ok).toBe(true);
+    expect(lie('phone', ids[2]).ok).toBe(true);
+    now = goTo(s, 'evidence2');
+    expect(lie('team', ids[3]).ok).toBe(false);
+  });
+});
+
+describe('trading', () => {
+  it('creates forced blind swaps with a trio when numbers are odd, auto-picking at the deadline', () => {
+    const { s } = setup(7);
+    const now = goTo(s, 'trading');
+    const forced = s.current!.swaps.filter((x) => x.kind === 'forced');
+    expect(forced.map((f) => f.members.length).sort()).toEqual([2, 2, 3]);
+    const before = JSON.stringify(s.current!.hands);
+    tick(s, now + 15_000);
+    expect(forced.every((f) => f.status === 'done')).toBe(true);
+    expect(JSON.stringify(s.current!.hands)).not.toBe(before);
+    // Everyone still holds the same number of notes after a rotation.
+    for (const id of Object.keys(s.current!.hands)) expect(s.current!.hands[id]).toHaveLength(2);
+  });
+
+  it('runs a requested swap: accept, both pick blind, notes change hands and stay in "seen"', () => {
+    const { s, ids } = setup(6);
+    let now = goTo(s, 'trading');
+    tick(s, (now += 15_000)); // let forced swaps resolve
+    const [a, b] = ids;
+    must(s, a, { type: 'requestSwap', targetId: b }, now);
+    expect(act(s, a, { type: 'requestSwap', targetId: ids[2] }, now).ok).toBe(false); // one pending at a time
+    const swap = s.current!.swaps[s.current!.swaps.length - 1];
+    must(s, b, { type: 'respondSwap', swapId: swap.id, accept: true }, now);
+    const na = s.current!.hands[a][0];
+    const nb = s.current!.hands[b][0];
+    must(s, a, { type: 'pickSwap', swapId: swap.id, noteId: na }, now);
+    expect(playerView(s, a, now).case!.lockedNoteIds).toContain(na);
+    must(s, b, { type: 'pickSwap', swapId: swap.id, noteId: nb }, now);
+    expect(s.current!.hands[a]).toContain(nb);
+    expect(s.current!.hands[b]).toContain(na);
+    expect(s.current!.seen[a]).toContain(na);
+    expect(s.current!.hands[a].filter((x) => x === na)).toHaveLength(0);
+  });
+
+  it('cancels a requested swap when someone backs out, and expires unanswered requests', () => {
+    const { s, ids } = setup(6);
+    let now = goTo(s, 'trading');
+    tick(s, (now += 15_000));
+    must(s, ids[0], { type: 'requestSwap', targetId: ids[1] }, now);
+    const s1 = s.current!.swaps[s.current!.swaps.length - 1];
+    must(s, ids[1], { type: 'respondSwap', swapId: s1.id, accept: true }, now);
+    must(s, ids[0], { type: 'pickSwap', swapId: s1.id, noteId: s.current!.hands[ids[0]][0] }, now);
+    const events = tick(s, now + 15_000);
+    expect(s1.status).toBe('cancelled');
+    expect(events.some((e) => e.type === 'toast' && e.to === ids[0] && e.text.includes('backed out'))).toBe(true);
+
+    now += 16_000;
+    must(s, ids[0], { type: 'requestSwap', targetId: ids[2] }, now);
+    const s2 = s.current!.swaps[s.current!.swaps.length - 1];
+    tick(s, now + 20_000);
+    expect(s2.status).toBe('expired');
+  });
+
+  it('limits requests to 2 per round but lets allies swap freely', () => {
+    const { s, ids } = setup(6);
+    let now = goTo(s, 'trading');
+    tick(s, (now += 15_000));
+    const [a, b, c, d] = ids;
+    must(s, a, { type: 'proposeAlliance', targetId: d }, now);
+    must(s, d, { type: 'respondAlliance', allianceId: s.current!.alliances[0].id, accept: true }, now);
+    for (const t of [b, c]) {
+      must(s, a, { type: 'requestSwap', targetId: t }, now);
+      must(s, t, { type: 'respondSwap', swapId: s.current!.swaps.at(-1)!.id, accept: false }, now);
+    }
+    expect(act(s, a, { type: 'requestSwap', targetId: ids[4] }, now).ok).toBe(false);
+    expect(act(s, a, { type: 'requestSwap', targetId: d }, now).ok).toBe(true);
+  });
+
+  it('gives and shows notes; shows flash and land in "seen" only, with a limit', () => {
+    const { s, ids } = setup(6);
+    let now = goTo(s, 'trading');
+    tick(s, (now += 15_000));
+    const [a, b, c, d] = ids;
+    const note = s.current!.hands[a][0];
+    const events = must(s, a, { type: 'show', targetId: b, noteId: note }, now);
+    expect(events[0]).toMatchObject({ type: 'flash', to: b, noteId: note });
+    expect(s.current!.seen[b]).toContain(note);
+    expect(s.current!.hands[a]).toContain(note);
+    must(s, a, { type: 'show', targetId: c, noteId: note }, now);
+    expect(act(s, a, { type: 'show', targetId: d, noteId: note }, now).ok).toBe(false);
+
+    must(s, a, { type: 'give', targetId: d, noteId: note }, now);
+    must(s, d, { type: 'respondGive', giveId: s.current!.gives[0].id, accept: true }, now);
+    expect(s.current!.hands[d]).toContain(note);
+    expect(s.current!.hands[a]).not.toContain(note);
+  });
+
+  it('disables alliances at 4 players and caps allies', () => {
+    const four = setup(4);
+    const now4 = goTo(four.s, 'trading');
+    expect(act(four.s, 'p0', { type: 'proposeAlliance', targetId: 'p1' }, now4).ok).toBe(false);
+
+    const { s, ids } = setup(6);
+    const now = goTo(s, 'trading');
+    must(s, ids[0], { type: 'proposeAlliance', targetId: ids[1] }, now);
+    must(s, ids[1], { type: 'respondAlliance', allianceId: s.current!.alliances[0].id, accept: true }, now);
+    expect(act(s, ids[0], { type: 'proposeAlliance', targetId: ids[2] }, now).ok).toBe(false);
+  });
+
+  it('limits statements by size and drops "I suspect" at 10+', () => {
+    const small = setup(6);
+    const n6 = goTo(small.s, 'questioning');
+    for (let i = 0; i < 3; i++) must(small.s, 'p0', { type: 'statement', statementType: 'vouch', targetId: 'p1' }, n6);
+    expect(act(small.s, 'p0', { type: 'statement', statementType: 'vouch', targetId: 'p1' }, n6).ok).toBe(false);
+
+    const big = setup(10);
+    const n10 = goTo(big.s, 'questioning');
+    expect(act(big.s, 'p0', { type: 'statement', statementType: 'suspect', targetId: 'p1' }, n10).ok).toBe(false);
+    must(big.s, 'p0', { type: 'statement', statementType: 'wasAt', value: 'Rooftop bar' }, n10);
+    expect(act(big.s, 'p0', { type: 'statement', statementType: 'lied', targetId: 'p1' }, n10).ok).toBe(false);
+  });
+});
+
+describe('scoring', () => {
+  it('rewards detectives who catch the killer and caps the killer', () => {
+    const { s } = setup(8);
+    const now = goTo(s, 'accusation');
+    const killer = s.current!.gen.killerId;
+    const dets = detectives(s);
+    must(s, dets[0], { type: 'accuse', targetId: killer, stake: 'sure' }, now);
+    must(s, dets[1], { type: 'accuse', targetId: killer, stake: 'hunch' }, now);
+    const wrong = dets.find((d) => d !== s.current!.gen.patsyId && d !== dets[0] && d !== dets[1])!;
+    must(s, wrong, { type: 'accuse', targetId: s.current!.gen.patsyId, stake: 'sure' }, now);
+    expect(act(s, dets[0], { type: 'accuse', targetId: dets[1], stake: 'sure' }, now).ok).toBe(false); // locked
+    tick(s, s.roundEndsAt!);
+    const r = s.current!.result!;
+    expect(r.scores[dets[0]].total).toBe(100);
+    expect(r.scores[dets[1]].total).toBe(50);
+    expect(r.scores[wrong].total).toBe(-30);
+    expect(r.scores[killer].total).toBeLessThanOrEqual(150);
+    expect(r.scores[killer].total).toBeGreaterThan(0);
+    expect(r.correctIds.sort()).toEqual([dets[0], dets[1]].sort());
+  });
+
+  it('pays the lie-exposed bonus only for real lies', () => {
+    const { s } = setup(6);
+    let now = goTo(s, 'questioning');
+    const [d1, d2] = detectives(s);
+    const killer = s.current!.gen.killerId;
+    must(s, d1, { type: 'ask', targetId: killer, dim: 'coat' }, now);
+    must(s, killer, { type: 'answer', questionId: s.current!.questions[0].id, mode: 'lie', lieValue: s.current!.gen.lieOptions[killer].coat[0] }, now);
+    must(s, d1, { type: 'mark', targetId: killer, mark: 'liar' }, now);
+    must(s, d2, { type: 'mark', targetId: killer, mark: 'liar' }, now);
+    now = goTo(s, 'reveal');
+    const r = s.current!.result!;
+    expect(r.scores[d1].lines.some((l) => l.label.startsWith('Exposed'))).toBe(true);
+    expect(r.scores[d2].lines.some((l) => l.label.startsWith('Exposed'))).toBe(false);
+    expect(r.lies[0]).toMatchObject({ by: killer, to: d1, exposed: true });
+  });
+});
+
+describe('redaction', () => {
+  it('never leaks hidden truth to detectives before the reveal', () => {
+    for (const n of [4, 8, 16, 22]) {
+      const { s } = setup(n, n);
+      for (const round of ROUND_ORDER.slice(0, 7)) {
+        const now = goTo(s, round);
+        for (const d of detectives(s)) {
+          const v = playerView(s, d, now);
+          const json = JSON.stringify(v);
+          expect(v.case!.role).toBe('detective');
+          expect(v.case!.killerBriefing).toBeUndefined();
+          expect(v.lastResult).toBeUndefined();
+          expect(json).not.toContain('"forged"');
+          expect(json).not.toContain('trails');
+          expect(json).not.toContain('"lied"');
+          // Only my own card's traits are present.
+          const mine = JSON.stringify(s.current!.gen.cards[d].traits);
+          for (const other of s.players.map((p) => p.id).filter((id) => id !== d)) {
+            const theirs = JSON.stringify(s.current!.gen.cards[other].traits);
+            if (theirs !== mine) expect(json).not.toContain(theirs);
+          }
+        }
+        for (const k of killerSide(s)) {
+          const v = playerView(s, k, now);
+          expect(v.case!.killerBriefing!.killerId).toBe(s.current!.gen.killerId);
+        }
+      }
+    }
+  });
+});
