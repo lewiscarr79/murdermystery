@@ -1,0 +1,63 @@
+@import 'tailwindcss';
+
+@theme {
+  --color-ink: #0b0b12;
+  --color-panel: #15151f;
+  --color-panel2: #1e1e2b;
+  --color-line: #2c2c3d;
+  --color-accent: #e5484d;
+  --color-gold: #f5c451;
+  --font-display: 'Georgia', 'Times New Roman', serif;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+  background: var(--color-ink);
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior: none;
+}
+
+button {
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+@utility btn {
+  @apply rounded-xl px-4 py-3 font-semibold transition active:scale-[0.98];
+}
+@utility btn-primary {
+  @apply btn bg-accent text-white;
+}
+@utility btn-ghost {
+  @apply btn border border-line bg-panel2 text-zinc-100;
+}
+@utility card {
+  @apply rounded-2xl border border-line bg-panel p-4;
+}
+@utility chip {
+  @apply rounded-full border border-line bg-panel2 px-2.5 py-1 text-xs;
+}
+@utility input {
+  @apply w-full rounded-xl border border-line bg-panel2 px-4 py-3 text-lg outline-none focus:border-accent;
+}
+
+@keyframes pop {
+  from {
+    transform: scale(0.92);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+.pop {
+  animation: pop 0.25s ease-out;
+}

@@ -19,7 +19,7 @@ async function main() {
   } else {
     const dist = path.join(process.cwd(), 'dist');
     app.use(express.static(dist));
-    app.get('*', (_req, res) => res.sendFile(path.join(dist, 'index.html')));
+    app.use((_req, res) => res.sendFile(path.join(dist, 'index.html')));
   }
 
   const port = Number(process.env.PORT ?? 3000);

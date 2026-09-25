@@ -21,6 +21,8 @@ export interface Pack {
   questions: Record<QuestionDim, string>;
 }
 
+const an = (v: string) => (/^[aeiou]/i.test(v) ? 'an' : 'a');
+
 const arrivalItem: Record<string, string> = {
   Uber: 'an Uber receipt (drop-off 19:48)',
   'E-scooter': 'an e-scooter unlock tag',
@@ -71,10 +73,10 @@ export const launchNight: Pack = {
   solitarySpots: ['Smoking area', 'Cloakroom', 'Car park', 'Bathroom corridor'],
   killerTemplates: {
     coat: [
-      { icon: 'cctv', text: (v) => `CCTV, service corridor, 21:34: a figure in a ${v.toLowerCase()} coat heads for the green room.` },
-      { icon: 'witness', text: (v) => `Cleaner's statement: someone in a ${v.toLowerCase()} coat brushed past the green-room door at 21:35.` },
-      { icon: 'coat', text: (v) => `Forensics: fibres from a ${v.toLowerCase()} coat were found on the victim's sleeve.` },
-      { icon: 'cctv', text: (v) => `Lift camera, 21:33: a blurred figure in a ${v.toLowerCase()} coat rides to floor 30.` },
+      { icon: 'cctv', text: (v) => `CCTV, service corridor, 21:34: a figure in ${an(v)} ${v.toLowerCase()} coat heads for the green room.` },
+      { icon: 'witness', text: (v) => `Cleaner's statement: someone in ${an(v)} ${v.toLowerCase()} coat brushed past the green-room door at 21:35.` },
+      { icon: 'coat', text: (v) => `Forensics: fibres from ${an(v)} ${v.toLowerCase()} coat were found on the victim's sleeve.` },
+      { icon: 'cctv', text: (v) => `Lift camera, 21:33: a blurred figure in ${an(v)} ${v.toLowerCase()} coat rides to floor 30.` },
     ],
     arrival: [
       { icon: 'receipt', text: (v) => `Dropped in the corridor outside the green room: ${arrivalItem[v]}.` },
@@ -84,21 +86,21 @@ export const launchNight: Pack = {
     ],
     drink: [
       { icon: 'glass', text: (v) => `The glass beside the body held ${v.toLowerCase()}. Wiped clean of prints.` },
-      { icon: 'glass', text: (v) => `Bar CCTV, 21:25: the killer's hand grabs a ${v.toLowerCase()} from the bar.` },
+      { icon: 'glass', text: (v) => `Bar CCTV, 21:25: the killer's hand grabs ${an(v)} ${v.toLowerCase()} from the bar.` },
       { icon: 'witness', text: (v) => `Bartender: "Whoever went backstage at 21:30 was drinking ${v.toLowerCase()}."` },
       { icon: 'glass', text: (v) => `A half-finished ${v.toLowerCase()} was left on the green-room table.` },
     ],
     phone: [
-      { icon: 'phone', text: (v) => `The victim's laptop was unlocked from a ${v} at 21:36.` },
+      { icon: 'phone', text: (v) => `The victim's laptop was unlocked from ${an(v)} ${v} at 21:36.` },
       { icon: 'phone', text: (v) => `Wi-Fi log: an unknown ${v} joined the green-room network at 21:33.` },
       { icon: 'phone', text: (v) => `A cracked ${v} screen protector was found by the green-room door.` },
-      { icon: 'phone', text: (v) => `Bluetooth log: a ${v} was paired with the green-room speaker at 21:34.` },
+      { icon: 'phone', text: (v) => `Bluetooth log: ${an(v)} ${v} was paired with the green-room speaker at 21:34.` },
     ],
     team: [
-      { icon: 'badge', text: (v) => `Door log: a ${v} badge opened the green-room side door at 21:31.` },
-      { icon: 'badge', text: (v) => `A ${v} team lanyard was snagged on the green-room door handle.` },
-      { icon: 'witness', text: (v) => `Security guard: "The person backstage had a ${v} lanyard, I'm sure of it."` },
-      { icon: 'badge', text: (v) => `Access audit: only a ${v} pass could reach the green room after 21:30.` },
+      { icon: 'badge', text: (v) => `Door log: ${an(v)} ${v} badge opened the green-room side door at 21:31.` },
+      { icon: 'badge', text: (v) => `${an(v) === 'an' ? 'An' : 'A'} ${v} team lanyard was snagged on the green-room door handle.` },
+      { icon: 'witness', text: (v) => `Security guard: "The person backstage had ${an(v)} ${v} lanyard, I'm sure of it."` },
+      { icon: 'badge', text: (v) => `Access audit: only ${an(v)} ${v} pass could reach the green room after 21:30.` },
     ],
   },
   recordTemplates: {
